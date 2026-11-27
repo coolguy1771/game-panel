@@ -6,7 +6,7 @@ import { userRepository, roleRepository, ssoLoginCodeRepository } from '../datab
 import { getDatabase } from '../database/init.js';
 import { withDatabaseTransaction } from '../database/transaction.js';
 import { deriveSsoUsername, selectRolesForGroups } from '../utils/ssoHelpers.js';
-import { logError } from '../utils/logger.js';
+import { logError, logInfo } from '../utils/logger.js';
 import type { SsoStatePayload } from '../utils/ssoState.js';
 
 const SSO_PROVIDER_ID = 'oidc';
@@ -35,13 +35,55 @@ function requireSsoConfig(): OidcRuntime['sso'] {
   return sso;
 }
 
+// Some providers (notably Authentik) advertise an issuer with a trailing slash while the
+// intuitive configuration omits it. Discovery stays anchored to the operator-configured
+// URL; when the only disagreement is the issuer identifier itself, discovery is retried
+// with the issuer value the metadata declares — same document, same host, fetched over the
+// same connection rules. Every other metadata check is unchanged.
+async function discoverOidcConfiguration(sso: OidcRuntime['sso']): Promise<oidc.Configuration> {
+  const discoveryOptions = {
+    // http:// issuers stay disabled unless explicitly opted in (dev/test IdPs).
+    execute: sso.allowInsecureRequests ? [oidc.allowInsecureRequests] : [],
+  };
+
+  try {
+    return await oidc.discovery(
+      new URL(sso.issuerUrl),
+      sso.clientId,
+      sso.clientSecret ?? undefined,
+      undefined,
+      discoveryOptions
+    );
+  } catch (error) {
+    const cause = (error as { cause?: { body?: { issuer?: unknown } } }).cause;
+    const declaredIssuer = typeof cause?.body?.issuer === 'string' ? cause.body.issuer : null;
+
+    if (
+      error instanceof oidc.ClientError &&
+      declaredIssuer &&
+      declaredIssuer !== sso.issuerUrl
+    ) {
+      logInfo(
+        'SSO:DISCOVERY',
+        `Provider declares issuer ${declaredIssuer}; re-anchoring discovery to it.`
+      );
+      return oidc.discovery(
+        new URL(declaredIssuer),
+        sso.clientId,
+        sso.clientSecret ?? undefined,
+        undefined,
+        discoveryOptions
+      );
+    }
+
+    throw error;
+  }
+}
+
 async function getRuntime(): Promise<OidcRuntime> {
   const sso = requireSsoConfig();
   cachedRuntime ??= {
-    config: await oidc.discovery(new URL(sso.issuerUrl), sso.clientId, sso.clientSecret ?? undefined, undefined, {
-      // http:// issuers stay disabled unless explicitly opted in (dev/test IdPs).
-      execute: sso.allowInsecureRequests ? [oidc.allowInsecureRequests] : [],
-    }),
+    config: await discoverOidcConfiguration(sso),
     sso,
   };
   return cachedRuntime;

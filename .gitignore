@@ -40,3 +40,6 @@ Thumbs.db
 
 # ---- Dev ----
 /dev
+# local no-docker dev data
+backend/.local-data/
+backend/.local-approot/

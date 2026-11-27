@@ -126,7 +126,9 @@ function readSsoConfig(): SsoConfig | null {
 
     return {
         enabled: true,
-        issuerUrl,
+        // Trailing slashes are stripped so the intuitive config form works; providers that
+        // declare a different issuer string are handled at discovery time.
+        issuerUrl: issuerUrl.replace(/\/+$/, ''),
         clientId,
         clientSecret: optionalEnv('SSO_OIDC_CLIENT_SECRET'),
         scopes: envOrDefault('SSO_OIDC_SCOPES', 'openid profile email'),
