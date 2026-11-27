@@ -85,6 +85,7 @@ export function UserAdministration({
   // the latest request for the currently selected server.
   const selectedServerIdRef = useRef('');
   const memberRequestIdRef = useRef(0);
+  const rolesRequestIdRef = useRef(0);
 
   const [addMemberUserId, setAddMemberUserId] = useState('');
   const [selectedServerRoleIds, setSelectedServerRoleIds] = useState<number[]>([]);
@@ -149,21 +150,32 @@ export function UserAdministration({
   }, []);
 
   const loadRoles = useCallback(async () => {
+    const requestId = ++rolesRequestIdRef.current;
+    const isCurrent = (): boolean => requestId === rolesRequestIdRef.current;
+
     setRolesLoading(true);
     setRolesError(null);
     try {
       const res = await apiClient.listRoles();
+      if (!isCurrent()) return;
       setRoles(res.roles);
     } catch (error) {
+      if (!isCurrent()) return;
       setRoles([]);
       setRolesError(apiError(error, 'Failed to load roles.'));
     } finally {
-      setRolesLoading(false);
+      if (isCurrent()) {
+        setRolesLoading(false);
+      }
     }
   }, []);
 
   const loadMembers = useCallback(async (serverId: string) => {
     if (!serverId) return;
+    // A refresh for a server that is no longer selected (e.g. the user switched while a
+    // save was running) must not touch the active list at all.
+    if (serverId !== selectedServerIdRef.current) return;
+
     const requestId = ++memberRequestIdRef.current;
     const isCurrent = (): boolean =>
       requestId === memberRequestIdRef.current && selectedServerIdRef.current === serverId;
@@ -389,6 +401,7 @@ export function UserAdministration({
       await apiClient.deleteUser(userId);
       await loadUsers();
       if (selectedServerId) await loadMembers(selectedServerId);
+      await loadRoles();
       setEditModalOpen(false);
       setFeedback({ type: 'success', text: `User ${usernameToDelete} deleted.` });
     } catch (error) {
@@ -641,6 +654,9 @@ export function UserAdministration({
             servers={servers}
             membersLoading={membersLoading}
             membersError={membersError}
+            rolesLoading={rolesLoading}
+            rolesError={rolesError}
+            onRetryRoles={loadRoles}
             onSaveChanges={handleSaveEdit}
             saveLoading={saveEditLoading}
             saveError={editError}

@@ -6,7 +6,6 @@ import { sendRouteError } from '../utils/routeErrors.js';
 import { PERMISSIONS } from '../permissions.js';
 import { toIsoTimestamp } from '../utils/time.js';
 import { optionalBoolean, requireBodyObject, requirePositiveInt, idArray } from '../utils/httpValidation.js';
-import { resolveAssignableRoles } from '../services/roleAssignment.js';
 import { withDatabaseTransaction } from '../database/transaction.js';
 
 const router = Router();
@@ -95,15 +94,29 @@ router.patch(
             if (body.roleIds !== undefined) {
                 roleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
 
-                // Only the delta is validated for manual assignment: clients resubmit the
-                // user's full set, which may include SSO-managed roles that must pass
-                // through untouched (the SSO sync removes those, never an admin edit).
+                // Clients resubmit the user's full set, which may include SSO-managed roles
+                // or stale ids revoked by an SSO sync since the editor opened. Only the
+                // delta against current assignments is judged:
+                //  - additions must exist and be panel-scoped; SSO-managed additions are
+                //    silently dropped (the SSO sync owns them and would re-grant anyway),
+                //  - removals of SSO-managed roles are rejected,
+                //  - everything else replaces the assignment set.
                 const currentRoleIds = await roleRepository.listGlobalRoleIdsByUser(id);
                 const submitted = new Set(roleIds);
                 const added = roleIds.filter((roleId) => !currentRoleIds.includes(roleId));
                 const removed = currentRoleIds.filter((roleId) => !submitted.has(roleId));
 
-                await resolveAssignableRoles(added, 'global');
+                const addedRoles = await Promise.all(
+                    added.map((roleId) => roleRepository.findById(roleId))
+                );
+                for (let index = 0; index < added.length; index += 1) {
+                    const role = addedRoles[index];
+                    if (!role || role.scope !== 'global') {
+                        return res.status(400).json({
+                            error: `Role ${added[index]} does not exist or is not a global role`,
+                        });
+                    }
+                }
 
                 const removedRoles = await Promise.all(
                     removed.map((roleId) => roleRepository.findById(roleId))
@@ -116,6 +129,21 @@ router.patch(
                         error: `Role "${removedManaged.name}" is managed by SSO and cannot be removed manually`,
                     });
                 }
+
+                const addedManual = new Set(
+                    added.filter((roleId) => {
+                        const role = addedRoles.find(
+                            (candidate) => candidate && candidate.id === roleId
+                        );
+                        return Boolean(role && role.ssoGroups.length === 0);
+                    })
+                );
+
+                // Managed ids the user still holds stay; managed ids they no longer hold
+                // are simply not restored.
+                roleIds = roleIds.filter(
+                    (roleId) => currentRoleIds.includes(roleId) || addedManual.has(roleId)
+                );
             }
 
             const isEnabled = optionalBoolean(body.isEnabled, 'isEnabled must be a boolean');

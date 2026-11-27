@@ -127,7 +127,14 @@ export async function buildSsoLoginRedirect(
 
 function readGroupsClaim(claims: Record<string, unknown>, claimName: string): string[] {
   const raw = claims[claimName];
-  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string');
+  if (Array.isArray(raw)) {
+    // Same normalization as the stored side (role ssoGroups entries are trimmed on input),
+    // so both sides of the group comparison treat whitespace identically.
+    return raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
   if (typeof raw === 'string' && raw.trim()) return [raw.trim()];
   return [];
 }

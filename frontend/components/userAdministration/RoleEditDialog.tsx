@@ -197,7 +197,7 @@ export function RoleEditDialog({
                       className="w-full rounded border border-gray-700 bg-[#0f172a] px-3 py-2 text-sm text-white focus:border-[var(--color-cyan-400)] focus:outline-none"
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      One group per line, exactly as the identity provider sends it.
+                      One group per line; matched against the claim after trimming surrounding whitespace.
                     </p>
                     {parsedSsoGroups.length > 0 && (
                       <p className="mt-1 text-xs text-gray-500">

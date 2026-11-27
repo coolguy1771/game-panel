@@ -33,6 +33,9 @@ interface UserEditDialogProps {
   servers: Array<{ id: string; name: string; provider?: string; catalogId?: string }>;
   membersLoading: boolean;
   membersError: string | null;
+  rolesLoading: boolean;
+  rolesError: string | null;
+  onRetryRoles: () => void;
   onSaveChanges: () => void;
   saveLoading: boolean;
   saveError?: string | null;
@@ -93,6 +96,9 @@ export function UserEditDialog({
   servers,
   membersLoading,
   membersError,
+  rolesLoading,
+  rolesError,
+  onRetryRoles,
   onSaveChanges,
   saveLoading,
   saveError,
@@ -220,15 +226,24 @@ export function UserEditDialog({
                       Roles bundle permissions; they apply across the whole panel.
                     </p>
                     <div className="mt-3 space-y-2">
+                      {rolesError && (
+                        <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                          {rolesError}{' '}
+                          <button type="button" onClick={onRetryRoles} className="underline">
+                            Retry
+                          </button>
+                        </div>
+                      )}
                       {globalRoles.map((role) => (
                         <RoleToggle
                           key={`global-role-${role.id}`}
                           role={role}
                           checked={selectedGlobalRoleIds.includes(role.id)}
+                          disabled={rolesLoading}
                           onChange={() => onToggleGlobalRole(role.id)}
                         />
                       ))}
-                      {globalRoles.length === 0 && (
+                      {globalRoles.length === 0 && !rolesLoading && !rolesError && (
                         <p className="text-sm text-gray-400">No panel roles defined yet.</p>
                       )}
                     </div>
@@ -283,16 +298,24 @@ export function UserEditDialog({
                         Roles on <span className="text-white">{selectedServerName}</span>
                       </p>
                       <div className="mt-2 space-y-2">
+                        {rolesError && (
+                          <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                            {rolesError}{' '}
+                            <button type="button" onClick={onRetryRoles} className="underline">
+                              Retry
+                            </button>
+                          </div>
+                        )}
                         {serverRoles.map((role) => (
                           <RoleToggle
                             key={`server-role-${role.id}`}
                             role={role}
                             checked={selectedServerRoleIds.includes(role.id)}
-                            disabled={!selectedServerId || membersLoading || Boolean(membersError)}
+                            disabled={!selectedServerId || membersLoading || Boolean(membersError) || rolesLoading}
                             onChange={() => onToggleServerRole(role.id)}
                           />
                         ))}
-                        {serverRoles.length === 0 && (
+                        {serverRoles.length === 0 && !rolesLoading && !rolesError && (
                           <p className="text-sm text-gray-400">No server roles defined yet.</p>
                         )}
                       </div>

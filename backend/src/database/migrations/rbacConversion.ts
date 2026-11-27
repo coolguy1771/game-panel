@@ -29,7 +29,9 @@ export type RbacConversionPlan = {
 function signatureOf(permissions: string[]): string {
   const unique = Array.from(new Set(permissions)).filter((p) => typeof p === 'string' && p.length > 0);
   if (unique.length === 0) return '';
-  return unique.sort().join('\u0000');
+  // JSON keeps signatures round-trippable for any permission string (a separator character
+  // inside a value would otherwise split it).
+  return JSON.stringify(unique.sort());
 }
 
 function systemRoleKeyByName(name: string): string {
@@ -89,7 +91,7 @@ export function planRbacConversion(
       number += 1;
       const key = scope === 'global' ? `imported:global:${number}` : `imported:server:${number}`;
       const name = scope === 'global' ? `Imported role ${number}` : `Imported server role ${number}`;
-      registerRole(key, name, scope, signature.split('\u0000'), false);
+      registerRole(key, name, scope, JSON.parse(signature) as string[], false);
       keyBySignature.set(signature, key);
     }
   };

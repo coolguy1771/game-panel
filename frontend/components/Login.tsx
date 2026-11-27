@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Eye, EyeOff, Fingerprint, Lock, User, AlertCircle } from 'lucide-react';
 import { apiClient } from '../utils/api';
 
@@ -33,6 +33,7 @@ export function Login({ onLogin }: LoginProps) {
   const [loading, setLoading] = useState(false);
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [ssoButtonLabel, setSsoButtonLabel] = useState('Sign in with SSO');
+  const [ssoStatusError, setSsoStatusError] = useState(false);
   const [ssoProcessing, setSsoProcessing] = useState(false);
 
   const normalizedError = error.trim().toLowerCase();
@@ -55,6 +56,21 @@ export function Login({ onLogin }: LoginProps) {
     setPassword(e.target.value);
   };
 
+  const loadSsoStatus = useCallback(() => {
+    setSsoStatusError(false);
+    apiClient
+      .getSsoStatus()
+      .then((status) => {
+        setSsoEnabled(status.enabled);
+        if (status.buttonLabel) setSsoButtonLabel(status.buttonLabel);
+      })
+      .catch(() => {
+        // Without a status answer we cannot show the SSO button; surface a retry so
+        // SSO-only installations are not stuck behind an unexplained password form.
+        setSsoStatusError(true);
+      });
+  }, []);
+
   // One-time SSO handoff: the backend redirects back here with a single-use code (or an
   // error reason). The code is exchanged for the session token immediately.
   useEffect(() => {
@@ -70,17 +86,7 @@ export function Login({ onLogin }: LoginProps) {
       setError(ssoErrorMessage(ssoError));
     }
 
-    // Availability loads independently of any exchange outcome: after a failed exchange the
-    // user must still see the SSO button (some installs have no local accounts).
-    apiClient
-      .getSsoStatus()
-      .then((status) => {
-        setSsoEnabled(status.enabled);
-        if (status.buttonLabel) setSsoButtonLabel(status.buttonLabel);
-      })
-      .catch(() => {
-        // Status is optional on the login screen; without it we just show password sign-in.
-      });
+    loadSsoStatus();
 
     if (ssoCode) {
       setSsoProcessing(true);
@@ -92,6 +98,17 @@ export function Login({ onLogin }: LoginProps) {
     }
     // onLogin is stable enough for mount-only execution; ESLint would flag it otherwise.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Browsers can restore this page from the back/forward cache after the user cancels at
+  // the identity provider; the pending flag would otherwise keep both buttons disabled.
+  useEffect(() => {
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setSsoProcessing(false);
+    };
+
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
   }, []);
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
@@ -258,6 +275,20 @@ export function Login({ onLogin }: LoginProps) {
                 {loading ? 'Signing in…' : 'Sign In'}
               </button>
             </form>
+
+            {ssoStatusError && !ssoEnabled && (
+              <p className="mt-4 text-center text-xs" style={{ color: '#b91c1c' }}>
+                Could not check single sign-on availability.{' '}
+                <button
+                  type="button"
+                  onClick={loadSsoStatus}
+                  className="underline transition-colors"
+                  style={{ color: '#991b1b' }}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
 
             {ssoEnabled && (
               <div className="mt-5">
