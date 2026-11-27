@@ -138,8 +138,12 @@ async function startServer(): Promise<void> {
     await ensureSystemRolesExist();
     logInfo('APP', 'Database initialized');
 
-    // Sync current Docker health -> DB once at boot
-    await reconcileDockerHealthToDb();
+    // Sync current Docker health -> DB once at boot. Non-fatal: a missing/unreachable
+    // Docker daemon must not take the panel down (matches the periodic reconciler, which
+    // also just logs failures).
+    await reconcileDockerHealthToDb().catch((error) => {
+      logError('APP:STARTUP:DOCKER_RECONCILE', error);
+    });
 
     // Make sure the games network exists and every game container sits on it
     await reconcileGamesNetwork().catch((error) => {

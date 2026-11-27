@@ -144,13 +144,19 @@ export function getConfig(): AppConfig {
     const domain = mustEnv('DOMAIN').trim();
     if (!domain) throw new Error('Missing env var: DOMAIN');
 
+    // DOMAIN is a bare host in deployments (https is implied); an explicit scheme is
+    // honored so local development can run over plain http.
+    const frontendUrl = /^https?:\/\//i.test(domain)
+      ? domain.replace(/\/+$/, '')
+      : `https://${domain}`;
+
     const gamepanelAppRoot = envOrDefault('GAMEPANEL_APP_ROOT', '/opt/gamepanel');
 
     cached = {
         port: Number(mustEnv('PORT')),
         jwtSecret: mustEnv('JWT_SECRET'),
         domain,
-        frontendUrl: `https://${domain}`,
+        frontendUrl,
         trustProxy: trustProxyEnv('TRUST_PROXY', false),
         adminUsername: envOrDefault('ADMIN_USERNAME', 'admin'),
         gamepanelServersDir: path.posix.join(gamepanelAppRoot, 'servers'),
