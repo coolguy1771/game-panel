@@ -1,23 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import { requireGlobalPermission } from '../middleware/auth.js';
-import { userRepository, serverMemberRepository, serverRepository } from '../database/index.js';
+import { roleRepository, serverMemberRepository, serverRepository, userRepository } from '../database/index.js';
+import { withDatabaseTransaction } from '../database/transaction.js';
 import { sendRouteError } from '../utils/routeErrors.js';
-import { PERMISSIONS, ASSIGNABLE_SERVER_PERMISSIONS } from '../permissions.js';
+import { PERMISSIONS } from '../permissions.js';
 import { toIsoTimestamp } from '../utils/time.js';
-import { requireBodyObject, requirePositiveInt, stringArray } from '../utils/httpValidation.js';
+import { requireBodyObject, requirePositiveInt, idArray } from '../utils/httpValidation.js';
+import { resolveAssignableRoles } from '../services/roleAssignment.js';
 
 const router = Router();
-
-function assertAssignableServerPermissions(permissions: string[], res: Response): boolean {
-    const invalid = permissions.filter((permission) => !ASSIGNABLE_SERVER_PERMISSIONS.has(permission));
-    if (invalid.length > 0) {
-        res.status(400).json({
-            error: `Unknown or non-assignable server permissions: ${invalid.join(', ')}`,
-        });
-        return false;
-    }
-    return true;
-}
 
 // GET /api/servers/:id/members
 router.get(
@@ -32,26 +23,16 @@ router.get(
 
             const members = await serverMemberRepository.listByServer(serverId);
 
-            // Return parsed permission arrays rather than raw JSON payloads.
-            const normalized = members.map((m) => {
-                let permissions: string[] = [];
-                try {
-                    const parsed = JSON.parse(m.permissions_json ?? '[]');
-                    if (Array.isArray(parsed)) permissions = parsed.filter((x) => typeof x === 'string');
-                } catch {
-                    // Keep an empty permission list if parsing fails.
-                }
-
-                return {
-                    id: m.id,
-                    serverId: m.server_id,
-                    userId: m.user_id,
-                    username: m.username,
-                    permissions,
-                    createdAt: toIsoTimestamp(m.created_at),
-                    updatedAt: toIsoTimestamp(m.updated_at),
-                };
-            });
+            // Return normalized members: roles resolved, timestamps as ISO strings.
+            const normalized = members.map((m) => ({
+                id: m.id,
+                serverId: m.server_id,
+                userId: m.user_id,
+                username: m.username,
+                roles: m.roles,
+                createdAt: toIsoTimestamp(m.created_at),
+                updatedAt: toIsoTimestamp(m.updated_at),
+            }));
 
             return res.json({ members: normalized });
         } catch (error) {
@@ -73,9 +54,9 @@ router.post(
             const serverId = requirePositiveInt(req.params.id, 'Invalid server id');
             const body = requireBodyObject(req.body);
 
-            const userId = requirePositiveInt(body.userId, 'Missing or invalid userId/permissions');
-            const permissions = stringArray(body.permissions, 'Missing or invalid userId/permissions');
-            if (!assertAssignableServerPermissions(permissions, res)) return;
+            const userId = requirePositiveInt(body.userId, 'Missing or invalid userId/roleIds');
+            const roleIds = idArray(body.roleIds ?? [], 'roleIds must be an array of role ids');
+            await resolveAssignableRoles(roleIds, 'server');
 
             const server = await serverRepository.findById(serverId);
             if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -86,7 +67,10 @@ router.post(
             const existing = await serverMemberRepository.find(serverId, userId);
             if (existing) return res.status(409).json({ error: 'User already assigned to server' });
 
-            await serverMemberRepository.create(serverId, userId, permissions);
+            await withDatabaseTransaction(async () => {
+              await serverMemberRepository.create(serverId, userId);
+              await roleRepository.setServerMemberRoles(serverId, userId, roleIds);
+            });
 
             return res.status(201).json({ success: true });
         } catch (error) {
@@ -110,13 +94,16 @@ router.patch(
             const userId = requirePositiveInt(req.params.userId, 'Invalid user id');
             const body = requireBodyObject(req.body);
 
-            const permissions = stringArray(body.permissions, 'Missing or invalid permissions');
-            if (!assertAssignableServerPermissions(permissions, res)) return;
+            const roleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
+            await resolveAssignableRoles(roleIds, 'server');
 
             const existing = await serverMemberRepository.find(serverId, userId);
             if (!existing) return res.status(404).json({ error: 'Membership not found' });
 
-            await serverMemberRepository.update(serverId, userId, permissions);
+            await withDatabaseTransaction(async () => {
+              await serverMemberRepository.update(serverId, userId);
+              await roleRepository.setServerMemberRoles(serverId, userId, roleIds);
+            });
 
             return res.json({ success: true });
         } catch (error) {

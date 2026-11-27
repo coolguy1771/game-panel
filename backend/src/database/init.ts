@@ -35,6 +35,8 @@ async function openAndInitialize(): Promise<Database> {
   });
 
   await database.exec('PRAGMA foreign_keys = ON');
+  // Cross-connection writers (see withDatabaseTransaction) wait instead of failing.
+  await database.exec('PRAGMA busy_timeout = 5000');
 
   const freshDatabase = await isFreshDatabase(database);
   await ensureSchemaMigrationsTable(database);
@@ -53,6 +55,14 @@ async function openAndInitialize(): Promise<Database> {
 export async function getDatabase(): Promise<Database> {
   if (!db) return initializeDatabase();
   return db;
+}
+
+// Opens an independent connection to the same SQLite file for transactional work.
+export async function openDatabaseConnection(): Promise<Database> {
+  const database = await open({ filename: dbFilePath, driver: sqlite3.Database });
+  await database.exec('PRAGMA foreign_keys = ON');
+  await database.exec('PRAGMA busy_timeout = 5000');
+  return database;
 }
 
 export async function closeDatabase(): Promise<void> {
@@ -140,7 +150,8 @@ async function createSchema(database: Database): Promise<void> {
   await database.exec('BEGIN');
 
   try {
-    // Users table
+    // Users table (RBAC/SSO columns added by migration 0002 must be present here too:
+    // fresh databases never run bundled migrations).
     await database.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,6 +161,11 @@ async function createSchema(database: Database): Promise<void> {
         is_root INTEGER NOT NULL DEFAULT 0 CHECK(is_root IN (0, 1)),
         is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
         token_version INTEGER NOT NULL DEFAULT 0,
+        auth_type TEXT NOT NULL DEFAULT 'local' CHECK(auth_type IN ('local','sso')),
+        sso_provider TEXT,
+        sso_issuer TEXT,
+        sso_subject TEXT,
+        sso_email TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -218,13 +234,77 @@ async function createSchema(database: Database): Promise<void> {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         server_id INTEGER NOT NULL,
         user_id INTEGER NOT NULL,
-        permissions_json TEXT NOT NULL DEFAULT '[]', -- JSON array, e.g. ["server.power","fs.read"]
+        permissions_json TEXT NOT NULL DEFAULT '[]', -- deprecated: kept for migration history, roles own access now
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (server_id) REFERENCES game_servers(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         UNIQUE(server_id, user_id)
       )
+    `);
+
+    // RBAC roles (migration 0002 equivalent for fresh databases)
+    await database.exec(`
+      CREATE TABLE IF NOT EXISTS roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('global','server')),
+        permissions_json TEXT NOT NULL DEFAULT '[]',
+        sso_groups_json TEXT NOT NULL DEFAULT '[]',
+        is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    await database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_name_scope ON roles(LOWER(name), scope);
+    `);
+
+    await database.exec(`
+      CREATE TABLE IF NOT EXISTS user_roles (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, role_id)
+      );
+    `);
+
+    await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);
+    `);
+
+    await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id);
+    `);
+
+    await database.exec(`
+      CREATE TABLE IF NOT EXISTS server_member_roles (
+        server_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        UNIQUE(server_id, user_id, role_id),
+        FOREIGN KEY (server_id, user_id) REFERENCES server_members(server_id, user_id) ON DELETE CASCADE
+      );
+    `);
+
+    await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_server_member_roles_user ON server_member_roles(user_id);
+    `);
+
+    await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_server_member_roles_role ON server_member_roles(role_id);
+    `);
+
+    await database.exec(`
+      CREATE TABLE IF NOT EXISTS sso_login_codes (
+        code_hash TEXT PRIMARY KEY,
+        handoff_hash TEXT NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+      );
     `);
 
     // Server logs table
@@ -437,6 +517,11 @@ async function createSchema(database: Database): Promise<void> {
     await database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci_unique
       ON users(LOWER(username));
+    `);
+
+    await database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_sso_identity
+      ON users(sso_provider, sso_issuer, sso_subject) WHERE sso_subject IS NOT NULL;
     `);
 
     await database.exec('COMMIT');

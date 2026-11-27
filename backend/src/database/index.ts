@@ -1,6 +1,8 @@
 import {
     UserRepository,
     ServerMemberRepository,
+    RoleRepository,
+    SsoLoginCodeRepository,
     GameServerRepository,
     InstallationProgressRepository,
     InstallationInteractionRepository,
@@ -15,6 +17,8 @@ import {
 
 export const userRepository = new UserRepository();
 export const serverMemberRepository = new ServerMemberRepository();
+export const roleRepository = new RoleRepository();
+export const ssoLoginCodeRepository = new SsoLoginCodeRepository();
 export const serverRepository = new GameServerRepository();
 export const installProgressRepository = new InstallationProgressRepository();
 export const installInteractionRepository = new InstallationInteractionRepository();

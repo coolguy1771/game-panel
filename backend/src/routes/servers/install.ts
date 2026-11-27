@@ -5,10 +5,12 @@ import {
 } from '../../middleware/auth.js';
 import {
     installProgressRepository,
+    roleRepository,
     serverMemberRepository,
     serverRepository,
     userRepository,
 } from '../../database/index.js';
+import { withDatabaseTransaction } from '../../database/transaction.js';
 import { bus } from '../../realtime/bus.js';
 import { resolveInstallSpec } from '../../providers/installSpec.js';
 import type { ResolvedInstallSpec } from '../../providers/installTypes.js';
@@ -180,7 +182,17 @@ export function createServerInstallRoutes(): Router {
                 if (requester && !Boolean(requester.is_root)) {
                     const existingMembership = await serverMemberRepository.find(serverId, requesterId);
                     if (!existingMembership) {
-                        await serverMemberRepository.create(serverId, requesterId, ['*']);
+                        // The installer keeps full access to the server they created - the
+                        // RBAC equivalent of the pre-roles '*' membership grant.
+                        const fullAccessRole = await roleRepository.findByScopeAndName('server', 'Full access');
+                        if (!fullAccessRole) {
+                            throw new Error('Full access system role is missing');
+                        }
+
+                        await withDatabaseTransaction(async () => {
+                            await serverMemberRepository.create(serverId, requesterId);
+                            await roleRepository.setServerMemberRoles(serverId, requesterId, [fullAccessRole.id]);
+                        });
                     }
                 }
 

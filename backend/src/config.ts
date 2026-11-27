@@ -19,6 +19,8 @@ function urlEnv(name: string): string | null {
 }
 
 const CONTAINER_DATA_DIR = '/data';
+// Overridable for local development and tests; deployments keep the container default.
+const DATA_DIR_ENV = 'GAMEPANEL_DATA_DIR';
 
 function boolEnv(name: string, fallback: boolean): boolean {
     const raw = process.env[name];
@@ -66,6 +68,18 @@ function trustProxyEnv(name: string, fallback: TrustProxySetting): TrustProxySet
     }
 }
 
+type SsoConfig = {
+    enabled: boolean;
+    issuerUrl: string;
+    clientId: string;
+    clientSecret: string | null;
+    scopes: string;
+    groupsClaim: string;
+    autoProvision: boolean;
+    buttonLabel: string;
+    allowInsecureRequests: boolean;
+};
+
 type AppConfig = {
     port: number;
     jwtSecret: string;
@@ -85,17 +99,36 @@ type AppConfig = {
     instanceSecret: string | null;
     telemetryEnabled: boolean;
     databaseApiBaseUrl: string | null;
+    sso: SsoConfig | null;
 };
 
 let cached: AppConfig | null = null;
 
-export function requireAdminBootstrapPassword(): string {
-    const password = process.env.ADMIN_PASSWORD?.trim();
-    if (!password) {
-        throw new Error('Missing env var: ADMIN_PASSWORD. It is required only while creating the first root user.');
-    }
+function optionalEnv(name: string): string | null {
+    const trimmed = process.env[name]?.trim();
+    return trimmed ? trimmed : null;
+}
 
-    return password;
+function readSsoConfig(): SsoConfig | null {
+    const issuerUrl = optionalEnv('SSO_OIDC_ISSUER_URL');
+    const clientId = optionalEnv('SSO_OIDC_CLIENT_ID');
+
+    if (!issuerUrl || !clientId) return null;
+
+    return {
+        enabled: true,
+        // Trailing slashes are stripped so the intuitive config form works; providers that
+        // declare a different issuer string are handled at discovery time.
+        issuerUrl: issuerUrl.replace(/\/+$/, ''),
+        clientId,
+        clientSecret: optionalEnv('SSO_OIDC_CLIENT_SECRET'),
+        scopes: envOrDefault('SSO_OIDC_SCOPES', 'openid profile email'),
+        groupsClaim: envOrDefault('SSO_OIDC_GROUPS_CLAIM', 'groups'),
+        autoProvision: boolEnv('SSO_OIDC_AUTO_PROVISION', true),
+        buttonLabel: envOrDefault('SSO_OIDC_BUTTON_LABEL', 'Sign in with SSO'),
+        // Opt-in only: allows http:// issuers (local/test IdPs). Production IdPs are https.
+        allowInsecureRequests: boolEnv('SSO_OIDC_ALLOW_INSECURE', false),
+    };
 }
 
 export function getConfig(): AppConfig {
@@ -104,17 +137,23 @@ export function getConfig(): AppConfig {
     const domain = mustEnv('DOMAIN').trim();
     if (!domain) throw new Error('Missing env var: DOMAIN');
 
+    // DOMAIN is a bare host in deployments (https is implied); an explicit scheme is
+    // honored so local development can run over plain http.
+    const frontendUrl = /^https?:\/\//i.test(domain)
+      ? domain.replace(/\/+$/, '')
+      : `https://${domain}`;
+
     const gamepanelAppRoot = envOrDefault('GAMEPANEL_APP_ROOT', '/opt/gamepanel');
 
     cached = {
         port: Number(mustEnv('PORT')),
         jwtSecret: mustEnv('JWT_SECRET'),
         domain,
-        frontendUrl: `https://${domain}`,
+        frontendUrl,
         trustProxy: trustProxyEnv('TRUST_PROXY', false),
         adminUsername: envOrDefault('ADMIN_USERNAME', 'admin'),
         gamepanelServersDir: path.posix.join(gamepanelAppRoot, 'servers'),
-        gamepanelDataDir: CONTAINER_DATA_DIR,
+        gamepanelDataDir: envOrDefault(DATA_DIR_ENV, CONTAINER_DATA_DIR),
         gamepanelAppRoot,
         dockerSocket: envOrDefault('DOCKER_SOCKET', '/var/run/docker.sock'),
         composeProjectName: envOrDefault('COMPOSE_PROJECT_NAME', 'gamepanel'),
@@ -125,6 +164,7 @@ export function getConfig(): AppConfig {
         instanceSecret: process.env.APP_INSTANCE_SECRET?.trim() || null,
         telemetryEnabled: boolEnv('TELEMETRY_ENABLED', true),
         databaseApiBaseUrl: urlEnv('TELEMETRY_API_BASE_URL'),
+        sso: readSsoConfig(),
     };
 
     return cached;

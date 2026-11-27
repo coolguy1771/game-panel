@@ -1,11 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import { type AuthenticatedRequest, authMiddleware, requireGlobalPermission } from '../middleware/auth.js';
 import { comparePasswords, generateToken, hashPassword } from '../utils/auth.js';
-import { userRepository, serverMemberRepository } from '../database/index.js';
+import { userRepository, serverMemberRepository, roleRepository } from '../database/index.js';
+import { withDatabaseTransaction } from '../database/transaction.js';
 import { asNonEmptyString } from './users.js';
 import { sendRouteError } from '../utils/routeErrors.js';
 import { PERMISSIONS } from '../permissions.js';
-import { requireBodyObject } from '../utils/httpValidation.js';
+import { requireBodyObject, idArray } from '../utils/httpValidation.js';
+import { resolveAssignableRoles } from '../services/roleAssignment.js';
+import { createRateLimiter, LOGIN_RATE_LIMITS } from '../utils/rateLimit.js';
 
 const router = Router();
 
@@ -13,132 +16,15 @@ function isStrongEnoughPassword(password: string): boolean {
   return password.length >= 8;
 }
 
-function normalizeUsername(value: string): string {
-  return value.trim();
-}
-
 function isValidUsername(value: string): boolean {
   return value.length > 0 && value.length <= 12;
 }
 
-function asStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const arr = value
-    .filter((x) => typeof x === 'string')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
-  if (arr.length !== value.length) return null;
-  return arr;
+function normalizeUsername(value: string): string {
+  return value.trim();
 }
 
-type LoginRateBucket = {
-  attempts: number[];
-  blockedUntil: number;
-};
-
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const LOGIN_RATE_WINDOW_MS = readPositiveIntEnv('LOGIN_RATE_WINDOW_MS', 15 * 60_000);
-const LOGIN_RATE_MAX_ATTEMPTS = readPositiveIntEnv('LOGIN_RATE_MAX_ATTEMPTS', 10);
-const LOGIN_RATE_BLOCK_MS = readPositiveIntEnv('LOGIN_RATE_BLOCK_MS', 15 * 60_000);
-
-const loginRateByIp = new Map<string, LoginRateBucket>();
-const loginRateByIdentifier = new Map<string, LoginRateBucket>();
-
-function normalizeIp(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.startsWith('::ffff:') ? trimmed.slice(7) : trimmed;
-}
-
-function getClientIp(req: Request): string {
-  if (typeof req.ip === 'string' && req.ip.trim()) {
-    return normalizeIp(req.ip);
-  }
-
-  if (typeof req.socket.remoteAddress === 'string' && req.socket.remoteAddress.trim()) {
-    return normalizeIp(req.socket.remoteAddress);
-  }
-
-  return 'unknown';
-}
-
-function getBucket(map: Map<string, LoginRateBucket>, key: string): LoginRateBucket {
-  let bucket = map.get(key);
-  if (!bucket) {
-    bucket = { attempts: [], blockedUntil: 0 };
-    map.set(key, bucket);
-  }
-  return bucket;
-}
-
-function pruneBucket(bucket: LoginRateBucket, now: number): void {
-  const minTs = now - LOGIN_RATE_WINDOW_MS;
-  bucket.attempts = bucket.attempts.filter((ts) => ts >= minTs);
-  if (bucket.blockedUntil <= now) {
-    bucket.blockedUntil = 0;
-  }
-}
-
-function getRetryAfterMs(map: Map<string, LoginRateBucket>, key: string, now: number): number {
-  const bucket = map.get(key);
-  if (!bucket) return 0;
-
-  pruneBucket(bucket, now);
-  return bucket.blockedUntil > now ? bucket.blockedUntil - now : 0;
-}
-
-function registerLoginFailure(map: Map<string, LoginRateBucket>, key: string, now: number): void {
-  const bucket = getBucket(map, key);
-  pruneBucket(bucket, now);
-  bucket.attempts.push(now);
-
-  if (bucket.attempts.length >= LOGIN_RATE_MAX_ATTEMPTS) {
-    bucket.blockedUntil = now + LOGIN_RATE_BLOCK_MS;
-    bucket.attempts = [];
-  }
-}
-
-function clearLoginRate(map: Map<string, LoginRateBucket>, key: string): void {
-  map.delete(key);
-}
-
-function ensureLoginRateLimit(req: Request, res: Response, identifier: string): boolean {
-  const now = Date.now();
-  const ipKey = getClientIp(req);
-  const idKey = identifier.toLowerCase();
-
-  const retryMs = Math.max(
-    getRetryAfterMs(loginRateByIp, ipKey, now),
-    getRetryAfterMs(loginRateByIdentifier, idKey, now)
-  );
-
-  if (retryMs <= 0) return true;
-
-  const retryAfterSeconds = Math.max(1, Math.ceil(retryMs / 1000));
-  res.setHeader('Retry-After', String(retryAfterSeconds));
-  res.status(429).json({ error: 'Too many login attempts', retryAfterSeconds });
-  return false;
-}
-
-function noteLoginFailure(req: Request, identifier: string): void {
-  const now = Date.now();
-  const ipKey = getClientIp(req);
-  const idKey = identifier.toLowerCase();
-
-  registerLoginFailure(loginRateByIp, ipKey, now);
-  registerLoginFailure(loginRateByIdentifier, idKey, now);
-}
-
-function clearLoginFailures(req: Request, identifier: string): void {
-  clearLoginRate(loginRateByIdentifier, identifier.toLowerCase());
-  clearLoginRate(loginRateByIp, getClientIp(req));
-}
+const loginRateLimiter = createRateLimiter(LOGIN_RATE_LIMITS);
 
 // POST /api/auth/register
 router.post(
@@ -152,22 +38,10 @@ router.post(
       const password = asNonEmptyString(body.password);
       const confirmPassword = asNonEmptyString(body.confirmPassword);
 
-      const globalPermissionsRaw = body.globalPermissions;
-
-      let globalPermissions: string[] | undefined = undefined;
-
-      if (globalPermissionsRaw !== undefined) {
-        const parsed = asStringArray(globalPermissionsRaw);
-
-        if (parsed === null) {
-          return res.status(400).json({ error: 'globalPermissions must be an array of strings' });
-        }
-
-        if (parsed.includes('*')) {
-          return res.status(400).json({ error: 'Wildcard permission "*" is reserved for root' });
-        }
-
-        globalPermissions = parsed;
+      let globalRoleIds: number[] = [];
+      if (body.roleIds !== undefined) {
+        globalRoleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
+        await resolveAssignableRoles(globalRoleIds, 'global');
       }
 
       if (!username || !password || !confirmPassword) {
@@ -194,15 +68,26 @@ router.post(
 
       const passwordHash = await hashPassword(password);
 
-      // Create user (enabled by default)
-      const userId = await userRepository.create(normalizedUsername, passwordHash, {
-        globalPermissions,
+      // Create user (enabled by default) with its initial global roles atomically.
+      const userId = await withDatabaseTransaction(async () => {
+        const newUserId = await userRepository.create(normalizedUsername, passwordHash, {});
+        if (!newUserId) throw new Error('Failed to create user');
+        await roleRepository.setGlobalRoles(newUserId, globalRoleIds);
+        return newUserId;
       });
 
-      const user = await userRepository.findById(userId!);
+      const user = await userRepository.findById(userId);
       if (!user) {
         throw new Error('Created user could not be loaded');
       }
+
+      const assignedRoles = await roleRepository.listGlobalRoleIdsByUser(user.id);
+      const roleObjects = await Promise.all(
+        assignedRoles.map(async (roleId) => {
+          const role = await roleRepository.findById(roleId);
+          return role ? { id: role.id, name: role.name } : null;
+        })
+      );
 
       return res.status(201).json({
         success: true,
@@ -211,7 +96,7 @@ router.post(
           username: user.username,
           isRoot: Boolean(user.is_root),
           isEnabled: Boolean(user.is_enabled),
-          globalPermissions,
+          roles: roleObjects.filter((role): role is { id: number; name: string } => role !== null),
         },
       });
     } catch (error) {
@@ -239,28 +124,32 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Username must be between 1 and 12 characters' });
     }
 
-    if (!ensureLoginRateLimit(req, res, normalizedIdentifier)) {
+    if (!loginRateLimiter.ensureAllowed(req, res, normalizedIdentifier)) {
       return;
     }
 
     const user = await userRepository.findByUsername(normalizedIdentifier);
     if (!user) {
-      noteLoginFailure(req, normalizedIdentifier);
+      loginRateLimiter.noteFailure(req, normalizedIdentifier);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    if (user.auth_type === 'sso') {
+      return res.status(400).json({ error: 'This account signs in with SSO' });
+    }
+
     if (!user.is_enabled) {
-      noteLoginFailure(req, normalizedIdentifier);
+      loginRateLimiter.noteFailure(req, normalizedIdentifier);
       return res.status(403).json({ error: 'Account disabled' });
     }
 
     const validPassword = await comparePasswords(password, user.password_hash);
     if (!validPassword) {
-      noteLoginFailure(req, normalizedIdentifier);
+      loginRateLimiter.noteFailure(req, normalizedIdentifier);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    clearLoginFailures(req, normalizedIdentifier);
+    loginRateLimiter.clear(req, normalizedIdentifier);
 
     const token = generateToken({
       userId: user.id,
@@ -303,20 +192,11 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
 
     const serverRows = await serverMemberRepository.listByUser(userId);
 
-    const serverPermissions = serverRows.map((r) => {
-      let permissions: string[] = [];
-      try {
-        const parsed = JSON.parse(r.permissions_json ?? '[]');
-        if (Array.isArray(parsed)) permissions = parsed.filter((x) => typeof x === 'string');
-      } catch {
-        // Keep an empty permission list if parsing fails.
-      }
-
-      return {
-        serverId: r.server_id,
-        permissions,
-      };
-    });
+    const serverPermissions = serverRows.map((r) => ({
+      serverId: r.server_id,
+      // Effective permissions are resolved from the member's roles server-side.
+      permissions: r.permissions,
+    }));
 
     return res.json({
       user: {
@@ -365,6 +245,10 @@ router.post('/change-password', authMiddleware, async (req: AuthenticatedRequest
     const user = await userRepository.findById(req.user!.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.auth_type === 'sso') {
+      return res.status(400).json({ error: 'SSO accounts do not use passwords' });
     }
 
     const validPassword = await comparePasswords(currentPassword, user.password_hash);

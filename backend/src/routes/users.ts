@@ -1,11 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import { requireGlobalPermission } from '../middleware/auth.js';
-import { userRepository } from '../database/index.js';
+import { roleRepository, userRepository } from '../database/index.js';
 import { hashPassword } from '../utils/auth.js';
 import { sendRouteError } from '../utils/routeErrors.js';
 import { PERMISSIONS } from '../permissions.js';
 import { toIsoTimestamp } from '../utils/time.js';
-import { optionalBoolean, requireBodyObject, requirePositiveInt } from '../utils/httpValidation.js';
+import { optionalBoolean, requireBodyObject, requirePositiveInt, idArray } from '../utils/httpValidation.js';
+import { withDatabaseTransaction } from '../database/transaction.js';
 
 const router = Router();
 
@@ -13,27 +14,6 @@ export function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
-}
-
-function asStringArray(value: unknown): string[] | null {
-    if (!Array.isArray(value)) return null;
-    const arr = value
-        .filter((x) => typeof x === 'string')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-
-    if (arr.length !== value.length) return null;
-    return arr;
-}
-
-function parsePermsJson(raw: unknown): string[] {
-    if (typeof raw !== 'string' || raw.trim() === '') return [];
-    try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
-    } catch {
-        return [];
-    }
 }
 
 function normalizeUsername(value: string): string {
@@ -51,13 +31,21 @@ router.get(
     async (_req: Request, res: Response) => {
         try {
             const users = await userRepository.list();
+            const assignments = await roleRepository.listGlobalAssignments();
+
+            const rolesByUser = new Map<number, Array<{ id: number; name: string }>>();
+            for (const assignment of assignments) {
+                const list = rolesByUser.get(assignment.userId) ?? [];
+                list.push({ id: assignment.roleId, name: assignment.roleName });
+                rolesByUser.set(assignment.userId, list);
+            }
 
             const normalized = users.map((u) => ({
                 id: u.id,
                 username: u.username,
                 isRoot: Boolean(u.is_root),
                 isEnabled: Boolean(u.is_enabled),
-                globalPermissions: parsePermsJson(u.global_permissions_json),
+                roles: rolesByUser.get(u.id) ?? [],
                 createdAt: toIsoTimestamp(u.created_at),
                 updatedAt: toIsoTimestamp(u.updated_at),
             }));
@@ -102,24 +90,73 @@ router.patch(
                 }
             }
 
-            const globalPermissionsRaw = body.globalPermissions;
-            const globalPermissions =
-                globalPermissionsRaw === undefined ? undefined : asStringArray(globalPermissionsRaw);
+            let roleIds: number[] | undefined = undefined;
+            if (body.roleIds !== undefined) {
+                roleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
 
-            if (globalPermissionsRaw !== undefined && globalPermissions === null) {
-                return res.status(400).json({ error: 'globalPermissions must be an array of strings' });
-            }
+                // Clients resubmit the user's full set, which may include SSO-managed roles
+                // or stale ids revoked by an SSO sync since the editor opened. Only the
+                // delta against current assignments is judged:
+                //  - additions must exist and be panel-scoped; SSO-managed additions are
+                //    silently dropped (the SSO sync owns them and would re-grant anyway),
+                //  - removals of SSO-managed roles are rejected,
+                //  - everything else replaces the assignment set.
+                const currentRoleIds = await roleRepository.listGlobalRoleIdsByUser(id);
+                const submitted = new Set(roleIds);
+                const added = roleIds.filter((roleId) => !currentRoleIds.includes(roleId));
+                const removed = currentRoleIds.filter((roleId) => !submitted.has(roleId));
 
-            if (globalPermissions && globalPermissions.includes('*')) {
-                return res.status(400).json({ error: 'Wildcard permission "*" is reserved for root' });
+                const addedRoles = await Promise.all(
+                    added.map((roleId) => roleRepository.findById(roleId))
+                );
+                for (let index = 0; index < added.length; index += 1) {
+                    const role = addedRoles[index];
+                    if (!role || role.scope !== 'global') {
+                        return res.status(400).json({
+                            error: `Role ${added[index]} does not exist or is not a global role`,
+                        });
+                    }
+                }
+
+                const removedRoles = await Promise.all(
+                    removed.map((roleId) => roleRepository.findById(roleId))
+                );
+                const removedManaged = removedRoles.find(
+                    (role) => role && role.ssoGroups.length > 0
+                );
+                if (removedManaged) {
+                    return res.status(400).json({
+                        error: `Role "${removedManaged.name}" is managed by SSO and cannot be removed manually`,
+                    });
+                }
+
+                const addedManual = new Set(
+                    added.filter((roleId) => {
+                        const role = addedRoles.find(
+                            (candidate) => candidate && candidate.id === roleId
+                        );
+                        return Boolean(role && role.ssoGroups.length === 0);
+                    })
+                );
+
+                // Managed ids the user still holds stay; managed ids they no longer hold
+                // are simply not restored.
+                roleIds = roleIds.filter(
+                    (roleId) => currentRoleIds.includes(roleId) || addedManual.has(roleId)
+                );
             }
 
             const isEnabled = optionalBoolean(body.isEnabled, 'isEnabled must be a boolean');
 
-            await userRepository.updateUser(id, {
-                username: normalizedUsername ?? undefined,
-                globalPermissions: globalPermissions ?? undefined,
-                is_enabled: isEnabled,
+            await withDatabaseTransaction(async () => {
+                await userRepository.updateUser(id, {
+                    username: normalizedUsername ?? undefined,
+                    is_enabled: isEnabled,
+                });
+
+                if (roleIds !== undefined) {
+                    await roleRepository.setGlobalRoles(id, roleIds);
+                }
             });
 
             return res.json({ success: true });
@@ -180,6 +217,10 @@ router.post(
 
             if (user.is_root) {
                 return res.status(403).json({ error: 'Root user password should be changed via /auth route' });
+            }
+
+            if (user.auth_type === 'sso') {
+                return res.status(400).json({ error: 'SSO accounts do not use passwords' });
             }
 
             const passwordHash = await hashPassword(newPassword);

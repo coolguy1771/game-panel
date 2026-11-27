@@ -496,6 +496,11 @@ write_env_file() {
   local instance_id="$2"
   local instance_secret="$3"
   local telemetry_enabled="$4"
+  local sso_issuer="$5"
+  local sso_client_id="$6"
+  local sso_client_secret="$7"
+  local sso_button_label="$8"
+  local sso_admin_groups="$9"
 
   cat >"$ENV_FILE" <<EOF
 PORT=3001
@@ -515,6 +520,21 @@ TELEMETRY_API_BASE_URL=$(escape_env_value "$DB_API_BASE_URL")
 VITE_DB_API_BASE_URL=$(escape_env_value "$DB_API_BASE_URL")
 COMPOSE_PROJECT_NAME=$(escape_env_value "$COMPOSE_PROJECT_NAME")
 EOF
+
+  # SSO is written only when configured; absent vars mean the feature stays disabled.
+  if [[ -n "$sso_issuer" && -n "$sso_client_id" ]]; then
+    {
+      printf 'SSO_OIDC_ISSUER_URL=%s\n' "$(escape_env_value "$sso_issuer")"
+      printf 'SSO_OIDC_CLIENT_ID=%s\n' "$(escape_env_value "$sso_client_id")"
+      if [[ -n "$sso_client_secret" ]]; then
+        printf 'SSO_OIDC_CLIENT_SECRET=%s\n' "$(escape_env_value "$sso_client_secret")"
+      fi
+      printf 'SSO_OIDC_BUTTON_LABEL=%s\n' "$(escape_env_value "$sso_button_label")"
+      if [[ -n "$sso_admin_groups" ]]; then
+        printf 'SSO_OIDC_ADMIN_GROUPS=%s\n' "$(escape_env_value "$sso_admin_groups")"
+      fi
+    } >>"$ENV_FILE"
+  fi
 
   chown root:"$APP_GROUP" "$ENV_FILE"
   chmod 0640 "$ENV_FILE"
@@ -654,9 +674,44 @@ main() {
 
   DOMAIN="$(prompt_required "${GP_DOMAIN:-}" 'Domain (example: panel.example.com)')"
   ADMIN_USERNAME="$(prompt_optional "${GP_ADMIN_USERNAME:-}" 'Admin username' 'admin')"
-  prompt_secret_required "${GP_ADMIN_PASSWORD:-}" 'Admin password'
-  ADMIN_PASSWORD="$REPLY"
   LETSENCRYPT_EMAIL="$(prompt_required "${GP_LETSENCRYPT_EMAIL:-}" "Let's Encrypt email")"
+
+  SSO_OIDC_ISSUER_URL="$(prompt_optional "${GP_SSO_OIDC_ISSUER_URL:-}" 'OIDC issuer URL for SSO (empty disables SSO)' '')"
+  SSO_OIDC_CLIENT_ID=''
+  SSO_OIDC_CLIENT_SECRET=''
+  SSO_OIDC_BUTTON_LABEL='Sign in with SSO'
+  SSO_OIDC_ADMIN_GROUPS=''
+  if [[ -n "$SSO_OIDC_ISSUER_URL" ]]; then
+    SSO_OIDC_CLIENT_ID="$(prompt_optional "${GP_SSO_OIDC_CLIENT_ID:-}" 'OIDC client ID' '')"
+    if [[ -n "$SSO_OIDC_CLIENT_ID" ]]; then
+      if [[ -n "${GP_SSO_OIDC_CLIENT_SECRET:-}" ]]; then
+        SSO_OIDC_CLIENT_SECRET="$GP_SSO_OIDC_CLIENT_SECRET"
+      elif ! is_true "${GP_NON_INTERACTIVE:-0}"; then
+        read -r -s -p 'OIDC client secret (empty for public PKCE clients): ' SSO_OIDC_CLIENT_SECRET
+        printf '\n' >&2
+      fi
+      SSO_OIDC_BUTTON_LABEL="$(prompt_optional "${GP_SSO_OIDC_BUTTON_LABEL:-}" 'SSO button label' 'Sign in with SSO')"
+      SSO_OIDC_ADMIN_GROUPS="$(prompt_optional "${GP_SSO_OIDC_ADMIN_GROUPS:-}" 'OIDC groups granted panel admin (comma-separated; empty keeps the local admin)' '')"
+      # Normalize like the backend: trim entries, drop empties, so whitespace-only or
+      # comma-only values cannot defeat the local-admin password requirement.
+      SSO_OIDC_ADMIN_GROUPS="$(printf '%s' "$SSO_OIDC_ADMIN_GROUPS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | paste -sd ',' -)"
+    fi
+  fi
+
+  # A local admin password is only required when SSO is not configured to mint admins.
+  if [[ -n "$SSO_OIDC_ADMIN_GROUPS" ]]; then
+    if [[ -n "${GP_ADMIN_PASSWORD:-}" ]]; then
+      ADMIN_PASSWORD="$GP_ADMIN_PASSWORD"
+    elif is_true "${GP_NON_INTERACTIVE:-0}"; then
+      ADMIN_PASSWORD=''
+    else
+      read -r -s -p 'Admin password (empty to skip the local admin and rely on SSO admins): ' ADMIN_PASSWORD
+      printf '\n' >&2
+    fi
+  else
+    prompt_secret_required "${GP_ADMIN_PASSWORD:-}" 'Admin password'
+    ADMIN_PASSWORD="$REPLY"
+  fi
 
   log "Installing system dependencies..."
   install_base_packages
@@ -689,7 +744,9 @@ main() {
   else
     TELEMETRY_ENABLED="false"
   fi
-  write_env_file "$JWT_SECRET" "$APP_INSTANCE_ID" "$APP_INSTANCE_SECRET" "$TELEMETRY_ENABLED"
+  write_env_file "$JWT_SECRET" "$APP_INSTANCE_ID" "$APP_INSTANCE_SECRET" "$TELEMETRY_ENABLED" \
+    "$SSO_OIDC_ISSUER_URL" "$SSO_OIDC_CLIENT_ID" "$SSO_OIDC_CLIENT_SECRET" "$SSO_OIDC_BUTTON_LABEL" \
+    "$SSO_OIDC_ADMIN_GROUPS"
   write_compose_file
 
   log "Pulling updater image..."

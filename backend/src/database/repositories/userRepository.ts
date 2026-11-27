@@ -1,5 +1,6 @@
 import { BaseRepository } from './base.js';
 import { nowIso } from '../../utils/time.js';
+import { parsePermissionsJson } from '../../utils/permissionList.js';
 
 export type DbUserRow = {
   id: number;
@@ -9,6 +10,10 @@ export type DbUserRow = {
   is_root: number;
   is_enabled: number;
   token_version: number;
+  auth_type: string;
+  sso_provider: string | null;
+  sso_subject: string | null;
+  sso_email: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -26,7 +31,7 @@ export class UserRepository extends BaseRepository {
   async findByUsername(username: string): Promise<DbUserRow | undefined> {
     const db = await this.ensureDb();
     return db.get(
-      `SELECT id, username, password_hash, global_permissions_json, is_root, is_enabled, token_version, created_at, updated_at
+      `SELECT id, username, password_hash, global_permissions_json, is_root, is_enabled, token_version, auth_type, sso_provider, sso_subject, sso_email, created_at, updated_at
        FROM users
        WHERE LOWER(username) = LOWER(?)
        LIMIT 1`,
@@ -37,7 +42,7 @@ export class UserRepository extends BaseRepository {
   async findById(id: number): Promise<DbUserRow | undefined> {
     const db = await this.ensureDb();
     return db.get(
-      `SELECT id, username, password_hash, global_permissions_json, is_root, is_enabled, token_version, created_at, updated_at
+      `SELECT id, username, password_hash, global_permissions_json, is_root, is_enabled, token_version, auth_type, sso_provider, sso_subject, sso_email, created_at, updated_at
        FROM users
        WHERE id = ?`,
       [id]
@@ -47,11 +52,11 @@ export class UserRepository extends BaseRepository {
   async create(
     username: string,
     passwordHash: string,
-    opts?: { globalPermissions?: string[]; isEnabled?: boolean }
+    opts?: { isEnabled?: boolean }
   ): Promise<number | undefined> {
     const db = await this.ensureDb();
 
-    const globalPermsJson = JSON.stringify(opts?.globalPermissions ?? []);
+    const globalPermsJson = '[]'; // legacy column, inert since roles own access
     const enabledInt = opts?.isEnabled === false ? 0 : 1;
 
     const timestamp = nowIso();
@@ -78,7 +83,6 @@ export class UserRepository extends BaseRepository {
     id: number,
     data: {
       username?: string;
-      globalPermissions?: string[];
       is_enabled?: boolean;
     }
   ): Promise<void> {
@@ -90,11 +94,6 @@ export class UserRepository extends BaseRepository {
     if (data.username !== undefined) {
       fields.push('username = ?');
       values.push(data.username);
-    }
-
-    if (data.globalPermissions !== undefined) {
-      fields.push('global_permissions_json = ?');
-      values.push(JSON.stringify(data.globalPermissions));
     }
 
     if (data.is_enabled !== undefined) {
@@ -115,23 +114,59 @@ export class UserRepository extends BaseRepository {
     await db.run('DELETE FROM users WHERE id = ?', [id]);
   }
 
+  async findBySsoIdentity(provider: string, issuer: string, subject: string): Promise<DbUserRow | undefined> {
+    const db = await this.ensureDb();
+    return db.get(
+      'SELECT * FROM users WHERE sso_provider = ? AND sso_issuer = ? AND sso_subject = ?',
+      [provider, issuer, subject]
+    );
+  }
+
+  async createSsoUser(data: {
+    username: string;
+    passwordHash: string;
+    email: string | null;
+    provider: string;
+    issuer: string;
+    subject: string;
+  }): Promise<number | undefined> {
+    const db = await this.ensureDb();
+    const timestamp = nowIso();
+    const result = await db.run(
+      `INSERT INTO users (username, password_hash, global_permissions_json, is_root, is_enabled, auth_type, sso_provider, sso_issuer, sso_subject, sso_email, created_at, updated_at)
+       VALUES (?, ?, '[]', 0, 1, 'sso', ?, ?, ?, ?, ?, ?)`,
+      [data.username, data.passwordHash, data.provider, data.issuer, data.subject, data.email, timestamp, timestamp]
+    );
+    return result.lastID;
+  }
+
+  async touchSsoLogin(userId: number, email: string | null): Promise<void> {
+    const db = await this.ensureDb();
+    await db.run(
+      'UPDATE users SET sso_email = ?, updated_at = ? WHERE id = ?',
+      [email, nowIso(), userId]
+    );
+  }
+
   async getGlobalPermissions(userId: number): Promise<string[]> {
     const db = await this.ensureDb();
 
-    const row = await db.get<{ global_permissions_json: string }>(
-      `SELECT global_permissions_json
-       FROM users
-       WHERE id = ?`,
+    // Effective global permissions are the union of the user's global roles' permissions.
+    // Roles are the only assignment mechanism since migration 0002.
+    const rows = await db.all<Array<{ permissions_json: string }>>(
+      `SELECT r.permissions_json
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = ?`,
       [userId]
     );
 
-    const raw = row?.global_permissions_json ?? '[]';
-
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
-    } catch {
-      return [];
+    const acc = new Set<string>();
+    for (const row of rows) {
+      for (const permission of parsePermissionsJson(row.permissions_json)) {
+        acc.add(permission);
+      }
     }
+    return [...acc];
   }
 }

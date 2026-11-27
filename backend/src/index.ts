@@ -6,10 +6,12 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { reconcileDockerHealthToDb, startDockerHealthEventListener, startPeriodicHealthReconcile } from './services/dockerEvents.js';
 import { closeDatabase, initializeDatabase } from './database/init.js';
-import { ensureRootUserExists } from './database/bootstrap.js';
+import { ensureRootUserExists, ensureSystemRolesExist, ensureSsoAdminRoleFromEnv } from './database/bootstrap.js';
 import { authMiddleware, errorHandler } from './middleware/auth.js';
 import authRoutes from './routes/auth.js';
+import authSsoRoutes from './routes/authSso.js';
 import userRoutes from './routes/users.js';
+import roleRoutes from './routes/roles.js';
 import serverMembersRoutes from './routes/serverMembers.js';
 import serverRoutes from './routes/servers.js';
 import systemRoutes from './routes/system.js';
@@ -82,12 +84,16 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 
+// /api/auth/sso (mounted before /api/auth so its prefix wins)
+app.use('/api/auth/sso', authSsoRoutes);
 // /api/auth
 app.use('/api/auth', authRoutes);
 // /api/download/:token
 app.use('/api/download', downloadRoutes);
 // /api/users
 app.use('/api/users', authMiddleware, userRoutes);
+// /api/roles
+app.use('/api/roles', authMiddleware, roleRoutes);
 // /api/servers/:id/members
 app.use('/api/servers', authMiddleware, serverMembersRoutes);
 // /api/servers
@@ -129,10 +135,16 @@ async function startServer(): Promise<void> {
     logInfo('APP', 'Initializing database...');
     await initializeDatabase();
     await ensureRootUserExists();
+    await ensureSystemRolesExist();
+    await ensureSsoAdminRoleFromEnv();
     logInfo('APP', 'Database initialized');
 
-    // Sync current Docker health -> DB once at boot
-    await reconcileDockerHealthToDb();
+    // Sync current Docker health -> DB once at boot. Non-fatal: a missing/unreachable
+    // Docker daemon must not take the panel down (matches the periodic reconciler, which
+    // also just logs failures).
+    await reconcileDockerHealthToDb().catch((error) => {
+      logError('APP:STARTUP:DOCKER_RECONCILE', error);
+    });
 
     // Make sure the games network exists and every game container sits on it
     await reconcileGamesNetwork().catch((error) => {

@@ -46,6 +46,15 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // Local development serves the API from the backend on :3001; in production the same
+    // origin fronts both (Traefik), so the app always talks to its own origin.
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
   preview: {
     port: 4173,
