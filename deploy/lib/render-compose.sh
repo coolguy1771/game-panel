@@ -135,6 +135,7 @@ services:
       SSO_OIDC_CLIENT_ID: "${SSO_OIDC_CLIENT_ID:-}"
       SSO_OIDC_CLIENT_SECRET: "${SSO_OIDC_CLIENT_SECRET:-}"
       SSO_OIDC_BUTTON_LABEL: "${SSO_OIDC_BUTTON_LABEL:-}"
+      SSO_OIDC_ADMIN_GROUPS: "${SSO_OIDC_ADMIN_GROUPS:-}"
     volumes:
       - "../data:/data"
       - "/var/run/docker.sock:/var/run/docker.sock"

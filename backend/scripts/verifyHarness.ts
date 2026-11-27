@@ -1,6 +1,6 @@
 import express, { type Application } from 'express';
 import { initializeDatabase, getDatabase } from '../src/database/init.js';
-import { ensureRootUserExists, ensureSystemRolesExist } from '../src/database/bootstrap.js';
+import { ensureRootUserExists, ensureSystemRolesExist, ensureSsoAdminRoleFromEnv } from '../src/database/bootstrap.js';
 import { authMiddleware } from '../src/middleware/auth.js';
 import authRoutes from '../src/routes/auth.js';
 import authSsoRoutes from '../src/routes/authSso.js';
@@ -15,6 +15,7 @@ export async function startVerifyHarness(port: number): Promise<{ close: () => P
   await initializeDatabase();
   await ensureRootUserExists();
   await ensureSystemRolesExist();
+  await ensureSsoAdminRoleFromEnv();
 
   const app: Application = express();
   app.use(express.json());

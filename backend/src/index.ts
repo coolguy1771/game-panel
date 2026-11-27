@@ -6,7 +6,7 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { reconcileDockerHealthToDb, startDockerHealthEventListener, startPeriodicHealthReconcile } from './services/dockerEvents.js';
 import { closeDatabase, initializeDatabase } from './database/init.js';
-import { ensureRootUserExists, ensureSystemRolesExist } from './database/bootstrap.js';
+import { ensureRootUserExists, ensureSystemRolesExist, ensureSsoAdminRoleFromEnv } from './database/bootstrap.js';
 import { authMiddleware, errorHandler } from './middleware/auth.js';
 import authRoutes from './routes/auth.js';
 import authSsoRoutes from './routes/authSso.js';
@@ -136,6 +136,7 @@ async function startServer(): Promise<void> {
     await initializeDatabase();
     await ensureRootUserExists();
     await ensureSystemRolesExist();
+    await ensureSsoAdminRoleFromEnv();
     logInfo('APP', 'Database initialized');
 
     // Sync current Docker health -> DB once at boot. Non-fatal: a missing/unreachable

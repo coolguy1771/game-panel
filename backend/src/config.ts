@@ -104,15 +104,6 @@ type AppConfig = {
 
 let cached: AppConfig | null = null;
 
-export function requireAdminBootstrapPassword(): string {
-    const password = process.env.ADMIN_PASSWORD?.trim();
-    if (!password) {
-        throw new Error('Missing env var: ADMIN_PASSWORD. It is required only while creating the first root user.');
-    }
-
-    return password;
-}
-
 function optionalEnv(name: string): string | null {
     const trimmed = process.env[name]?.trim();
     return trimmed ? trimmed : null;

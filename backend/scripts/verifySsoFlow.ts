@@ -21,6 +21,7 @@ process.env.SSO_OIDC_ISSUER_URL = 'placeholder-set-after-mock-starts';
 process.env.SSO_OIDC_CLIENT_ID = 'game-panel-verify';
 process.env.SSO_OIDC_CLIENT_SECRET = 'verify-client-secret';
 process.env.SSO_OIDC_ALLOW_INSECURE = 'true';
+process.env.SSO_OIDC_ADMIN_GROUPS = 'panel-admins';
 process.env.TELEMETRY_ENABLED = 'false';
 
 let failures = 0;
@@ -101,6 +102,13 @@ async function main(): Promise<void> {
     Array.isArray(rolesList.roles) &&
       rolesList.roles.filter((r: { isSystem: boolean }) => r.isSystem).length === 4,
     rolesList.roles?.map((r: { name: string }) => r.name),
+  );
+
+  const administratorRole = rolesList.roles.find((r: { name: string }) => r.name === 'Administrator');
+  check(
+    'env-declared SSO admin groups bound to Administrator',
+    Array.isArray(administratorRole?.ssoGroups) && administratorRole.ssoGroups.includes('panel-admins'),
+    administratorRole?.ssoGroups,
   );
 
   const badRoleRes = await post(
