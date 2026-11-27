@@ -92,3 +92,18 @@ export function contentLengthHeader(value: string | string[] | undefined): numbe
     const parsed = Number.parseInt(String(raw ?? '0'), 10);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
+
+// Parses an array of positive integer ids (e.g. roleIds). Duplicates are allowed here and
+// deduplicated downstream; anything that is not a positive integer fails the request.
+export function idArray(value: unknown, message: string): number[] {
+    if (!Array.isArray(value)) badRequest(message);
+
+    const ids: number[] = [];
+    for (const item of value) {
+        const parsed = parsePositiveIntId(item);
+        if (!parsed) badRequest(message);
+        ids.push(parsed);
+    }
+    return ids;
+}
+

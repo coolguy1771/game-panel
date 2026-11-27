@@ -10,6 +10,7 @@ import { ensureRootUserExists, ensureSystemRolesExist } from './database/bootstr
 import { authMiddleware, errorHandler } from './middleware/auth.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
+import roleRoutes from './routes/roles.js';
 import serverMembersRoutes from './routes/serverMembers.js';
 import serverRoutes from './routes/servers.js';
 import systemRoutes from './routes/system.js';
@@ -88,6 +89,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/download', downloadRoutes);
 // /api/users
 app.use('/api/users', authMiddleware, userRoutes);
+// /api/roles
+app.use('/api/roles', authMiddleware, roleRoutes);
 // /api/servers/:id/members
 app.use('/api/servers', authMiddleware, serverMembersRoutes);
 // /api/servers

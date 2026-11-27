@@ -146,6 +146,18 @@ export class RoleRepository extends BaseRepository {
     return rows.map((row) => row.role_id);
   }
 
+  // All global assignments with role names, for user listings.
+  async listGlobalAssignments(): Promise<Array<{ userId: number; roleId: number; roleName: string }>> {
+    const db = await this.ensureDb();
+    const rows = await db.all<Array<{ userId: number; roleId: number; roleName: string }>>(
+      `SELECT ur.user_id AS userId, r.id AS roleId, r.name AS roleName
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       ORDER BY ur.user_id ASC, LOWER(r.name) ASC`
+    );
+    return rows;
+  }
+
   // Replaces the user's global role assignments in one transaction.
   async setGlobalRoles(userId: number, roleIds: number[]): Promise<void> {
     const db = await this.ensureDb();

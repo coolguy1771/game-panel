@@ -1,11 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import { type AuthenticatedRequest, authMiddleware, requireGlobalPermission } from '../middleware/auth.js';
 import { comparePasswords, generateToken, hashPassword } from '../utils/auth.js';
-import { userRepository, serverMemberRepository } from '../database/index.js';
+import { userRepository, serverMemberRepository, roleRepository } from '../database/index.js';
 import { asNonEmptyString } from './users.js';
 import { sendRouteError } from '../utils/routeErrors.js';
 import { PERMISSIONS } from '../permissions.js';
-import { requireBodyObject } from '../utils/httpValidation.js';
+import { requireBodyObject, idArray } from '../utils/httpValidation.js';
+import { resolveAssignableRoles } from '../services/roleAssignment.js';
 
 const router = Router();
 
@@ -13,23 +14,12 @@ function isStrongEnoughPassword(password: string): boolean {
   return password.length >= 8;
 }
 
-function normalizeUsername(value: string): string {
-  return value.trim();
-}
-
 function isValidUsername(value: string): boolean {
   return value.length > 0 && value.length <= 12;
 }
 
-function asStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const arr = value
-    .filter((x) => typeof x === 'string')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
-  if (arr.length !== value.length) return null;
-  return arr;
+function normalizeUsername(value: string): string {
+  return value.trim();
 }
 
 type LoginRateBucket = {
@@ -152,22 +142,10 @@ router.post(
       const password = asNonEmptyString(body.password);
       const confirmPassword = asNonEmptyString(body.confirmPassword);
 
-      const globalPermissionsRaw = body.globalPermissions;
-
-      let globalPermissions: string[] | undefined = undefined;
-
-      if (globalPermissionsRaw !== undefined) {
-        const parsed = asStringArray(globalPermissionsRaw);
-
-        if (parsed === null) {
-          return res.status(400).json({ error: 'globalPermissions must be an array of strings' });
-        }
-
-        if (parsed.includes('*')) {
-          return res.status(400).json({ error: 'Wildcard permission "*" is reserved for root' });
-        }
-
-        globalPermissions = parsed;
+      let globalRoleIds: number[] = [];
+      if (body.roleIds !== undefined) {
+        globalRoleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
+        await resolveAssignableRoles(globalRoleIds, 'global');
       }
 
       if (!username || !password || !confirmPassword) {
@@ -195,14 +173,24 @@ router.post(
       const passwordHash = await hashPassword(password);
 
       // Create user (enabled by default)
-      const userId = await userRepository.create(normalizedUsername, passwordHash, {
-        globalPermissions,
-      });
+      const userId = await userRepository.create(normalizedUsername, passwordHash, {});
+
+      if (userId) {
+        await roleRepository.setGlobalRoles(userId, globalRoleIds);
+      }
 
       const user = await userRepository.findById(userId!);
       if (!user) {
         throw new Error('Created user could not be loaded');
       }
+
+      const assignedRoles = await roleRepository.listGlobalRoleIdsByUser(user.id);
+      const roleObjects = await Promise.all(
+        assignedRoles.map(async (roleId) => {
+          const role = await roleRepository.findById(roleId);
+          return role ? { id: role.id, name: role.name } : null;
+        })
+      );
 
       return res.status(201).json({
         success: true,
@@ -211,7 +199,7 @@ router.post(
           username: user.username,
           isRoot: Boolean(user.is_root),
           isEnabled: Boolean(user.is_enabled),
-          globalPermissions,
+          roles: roleObjects.filter((role): role is { id: number; name: string } => role !== null),
         },
       });
     } catch (error) {

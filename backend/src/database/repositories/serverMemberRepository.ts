@@ -19,10 +19,14 @@ export type ServerMembershipRow = {
   updated_at: string;
 };
 
+export type ServerMemberWithRolesRow = ServerMemberWithUserRow & {
+  roles: Array<{ id: number; name: string }>;
+};
+
 export class ServerMemberRepository extends BaseRepository {
   async listByServer(serverId: number) {
     const db = await this.ensureDb();
-    return db.all<ServerMemberWithUserRow[]>(
+    const members = await db.all<ServerMemberWithUserRow[]>(
       `SELECT sm.id,
               sm.server_id,
               sm.user_id,
@@ -36,6 +40,30 @@ export class ServerMemberRepository extends BaseRepository {
        ORDER BY u.username ASC`,
       [serverId]
     );
+
+    // Role assignments for every member of this server, merged in by user id.
+    const roleRows = await db.all<
+      Array<{ user_id: number; role_id: number; role_name: string }>
+    >(
+      `SELECT smr.user_id, r.id AS role_id, r.name AS role_name
+       FROM server_member_roles smr
+       JOIN roles r ON r.id = smr.role_id
+       WHERE smr.server_id = ?
+       ORDER BY LOWER(r.name) ASC`,
+      [serverId]
+    );
+
+    const rolesByUser = new Map<number, Array<{ id: number; name: string }>>();
+    for (const row of roleRows) {
+      const list = rolesByUser.get(row.user_id) ?? [];
+      list.push({ id: row.role_id, name: row.role_name });
+      rolesByUser.set(row.user_id, list);
+    }
+
+    return members.map((member) => ({
+      ...member,
+      roles: rolesByUser.get(member.user_id) ?? [],
+    })) satisfies ServerMemberWithRolesRow[];
   }
 
   async listByUser(userId: number) {
