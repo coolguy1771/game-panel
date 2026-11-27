@@ -1,47 +1,13 @@
-import { useState, type Dispatch, type SetStateAction } from 'react';
-import { AlertCircle, Eye, EyeOff, Save } from 'lucide-react';
+import { useState } from 'react';
+import { AlertCircle, Eye, EyeOff, Save, ShieldCheck } from 'lucide-react';
 import { X } from 'lucide-react';
 import { Dialog, DialogContent } from '../ui/dialog';
 import { AppButton, AppInput, AppSelect, AppToggle } from '../../src/ui/components';
-import {
-  BACKUP_OPTIONS,
-  CS2_OVHCLOUD_OPTIONS,
-  CS2_PRESETS,
-  FILE_MANAGER_OPTIONS,
-  GLOBAL_OPTIONS,
-  HYTALE_OVHCLOUD_OPTIONS,
-  HYTALE_PRESETS,
-  PALWORLD_OVHCLOUD_OPTIONS,
-  PALWORLD_PRESETS,
-  PROJECT_ZOMBOID_OVHCLOUD_OPTIONS,
-  PROJECT_ZOMBOID_PRESETS,
-  RUST_OVHCLOUD_OPTIONS,
-  RUST_PRESETS,
-  VALHEIM_OVHCLOUD_OPTIONS,
-  VALHEIM_PRESETS,
-  MINECRAFT_OVHCLOUD_OPTIONS,
-  MINECRAFT_PRESETS,
-  SCHEDULED_TASKS_OPTIONS,
-  SERVER_GENERAL_OPTIONS,
-  SERVER_PRESETS,
-  WIPE_OPTIONS,
-  getAccessLevelLabel,
-  isServerPermissionChecked,
-  samePermissionSet,
-  togglePermission,
-  toggleServerPermission,
-} from './utils';
-import { getSupportedWipeModes } from '../serverSettings/wipeModes';
+import type { PanelRole } from '../../utils/api';
 
 interface SelectedUserRef {
   id: number;
   isRoot: boolean;
-}
-
-interface SelectedAccessUser {
-  userId: number;
-  username: string;
-  permissions: string[];
 }
 
 interface UserEditDialogProps {
@@ -56,20 +22,49 @@ interface UserEditDialogProps {
   setNewPassword: (value: string) => void;
   newPasswordConfirm: string;
   setNewPasswordConfirm: (value: string) => void;
-  globalKnown: string[];
-  setGlobalKnown: Dispatch<SetStateAction<string[]>>;
+  globalRoles: PanelRole[];
+  selectedGlobalRoleIds: number[];
+  onToggleGlobalRole: (roleId: number) => void;
+  serverRoles: PanelRole[];
+  selectedServerRoleIds: number[];
+  onToggleServerRole: (roleId: number) => void;
   selectedServerId: string;
   setSelectedServerId: (serverId: string) => void;
   servers: Array<{ id: string; name: string; provider?: string; catalogId?: string }>;
-  selectedAccessUser: SelectedAccessUser | null;
-  addMemberPerms: string[];
-  addMemberKnown: string[];
-  setAddMemberKnown: Dispatch<SetStateAction<string[]>>;
-  applyAddPreset: (presetId: string) => void;
   membersError: string | null;
   onSaveChanges: () => void;
   saveLoading: boolean;
   saveError?: string | null;
+}
+
+function RoleToggle({
+  role,
+  checked,
+  onChange,
+}: {
+  role: PanelRole;
+  checked: boolean;
+  onChange: () => void;
+}) {
+  const ssoManaged = role.ssoGroups.length > 0;
+
+  return (
+    <AppToggle
+      ariaLabel={role.name}
+      checked={checked}
+      size="compact"
+      disabled={ssoManaged}
+      onChange={onChange}
+      label={ssoManaged ? `${role.name} (managed by SSO)` : role.name}
+      className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
+        ssoManaged
+          ? 'cursor-not-allowed border-gray-700/60 bg-[#111827]/60 text-gray-500'
+          : checked
+            ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
+            : 'border-gray-700 bg-[#111827]'
+      }`}
+    />
+  );
 }
 
 export function UserEditDialog({
@@ -84,16 +79,15 @@ export function UserEditDialog({
   setNewPassword,
   newPasswordConfirm,
   setNewPasswordConfirm,
-  globalKnown,
-  setGlobalKnown,
+  globalRoles,
+  selectedGlobalRoleIds,
+  onToggleGlobalRole,
+  serverRoles,
+  selectedServerRoleIds,
+  onToggleServerRole,
   selectedServerId,
   setSelectedServerId,
   servers,
-  selectedAccessUser,
-  addMemberPerms,
-  addMemberKnown,
-  setAddMemberKnown,
-  applyAddPreset,
   membersError,
   onSaveChanges,
   saveLoading,
@@ -104,35 +98,15 @@ export function UserEditDialog({
 
   const selectedServer = servers.find((server) => server.id === selectedServerId);
   const selectedServerName = selectedServer?.name || 'this server';
-  const isOvhcloud = selectedServer?.provider === 'ovhcloud';
-  const isCs2OvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'counter-strike-2';
-  const isMinecraftOvhcloudServer = isOvhcloud && (selectedServer?.catalogId?.includes('minecraft') ?? false);
-  const isMinecraftWithAddons = isMinecraftOvhcloudServer && (
-    selectedServer?.catalogId?.includes('paper') ||
-    selectedServer?.catalogId?.includes('fabric') ||
-    selectedServer?.catalogId?.includes('neoforge') ||
-    selectedServer?.catalogId?.includes('forge')
-  );
-  const isHytaleOvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'hytale';
-  const isPalworldOvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'palworld';
-  const isProjectZomboidOvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'project-zomboid';
-  const isRustOvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'rust';
-  const isValheimOvhcloudServer = isOvhcloud && selectedServer?.catalogId === 'valheim';
-  const isExternalServer = selectedServer?.provider === 'external';
   const isBusy = saveLoading;
 
-  const wipeFamily = isMinecraftOvhcloudServer ? 'minecraft'
-    : isHytaleOvhcloudServer ? 'hytale'
-    : isPalworldOvhcloudServer ? 'palworld'
-    : isProjectZomboidOvhcloudServer ? 'project-zomboid'
-    : isCs2OvhcloudServer ? 'counter-strike'
-    : isRustOvhcloudServer ? 'rust'
-    : isValheimOvhcloudServer ? 'valheim'
-    : null;
-  const supportedWipeModes = getSupportedWipeModes(wipeFamily);
-  const wipeOptions = WIPE_OPTIONS.filter((opt) =>
-    supportedWipeModes.includes(opt.value === 'server.wipe.hard' ? 'hard' : 'soft')
-  );
+  const accessSummary =
+    selectedServerRoleIds.length === 0
+      ? 'No access'
+      : serverRoles
+          .filter((role) => selectedServerRoleIds.includes(role.id))
+          .map((role) => role.name)
+          .join(', ');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -159,7 +133,7 @@ export function UserEditDialog({
               </div>
             ) : (
               <div className="space-y-5 pt-0">
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <section className="rounded-lg border border-gray-700 bg-[#1f2937] p-4">
                     <h3 className="text-lg font-semibold text-white">User configuration</h3>
                     <div className="mt-3 space-y-4">
@@ -235,29 +209,22 @@ export function UserEditDialog({
                   </section>
 
                   <section className="rounded-lg border border-gray-700 bg-[#1f2937] p-4">
-                    <h3 className="text-lg font-semibold text-white">Global Permissions</h3>
+                    <h3 className="text-lg font-semibold text-white">Panel roles</h3>
+                    <p className="mt-1 text-sm text-gray-400">
+                      Roles bundle permissions; they apply across the whole panel.
+                    </p>
                     <div className="mt-3 space-y-2">
-                      {GLOBAL_OPTIONS.filter((opt) => opt.value !== '*').map((opt) => {
-                        const checked = globalKnown.includes(opt.value);
-
-                        return (
-                          <AppToggle
-                            key={`global-${opt.value}`}
-                            ariaLabel={opt.label}
-                            checked={checked}
-                            size="compact"
-                            onChange={() =>
-                              setGlobalKnown((current) => togglePermission(current, opt.value))
-                            }
-                            label={opt.label}
-                            className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                              checked
-                                ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                : 'border-gray-700 bg-[#111827]'
-                            }`}
-                          />
-                        );
-                      })}
+                      {globalRoles.map((role) => (
+                        <RoleToggle
+                          key={`global-role-${role.id}`}
+                          role={role}
+                          checked={selectedGlobalRoleIds.includes(role.id)}
+                          onChange={() => onToggleGlobalRole(role.id)}
+                        />
+                      ))}
+                      {globalRoles.length === 0 && (
+                        <p className="text-sm text-gray-400">No panel roles defined yet.</p>
+                      )}
                     </div>
                   </section>
                 </div>
@@ -265,7 +232,7 @@ export function UserEditDialog({
                 <section className="rounded-lg border border-gray-700 bg-[#1f2937] p-4">
                   <h3 className="text-lg font-semibold text-white">Server access for this user</h3>
                   <p className="mt-1 text-sm text-gray-400">
-                    Configure one server at a time with clear access status and actions
+                    Pick the roles this user holds on the selected server.
                   </p>
 
                   {membersError && (
@@ -294,398 +261,39 @@ export function UserEditDialog({
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs text-gray-400">Current access</span>
                         <span
-                          className={`rounded-full border px-2 py-0.5 text-xs ${
-                            selectedAccessUser
+                          className={`truncate rounded-full border px-2 py-0.5 text-xs ${
+                            selectedServerRoleIds.length > 0
                               ? 'border-[var(--color-cyan-400)]/40 bg-[#0050D7]/10 text-[var(--color-cyan-400)]'
                               : 'border-gray-600 bg-[#0f172a] text-gray-300'
                           }`}
                         >
-                          {selectedAccessUser
-                            ? getAccessLevelLabel(selectedAccessUser.permissions)
-                            : 'No access'}
+                          {accessSummary}
                         </span>
                       </div>
                     </div>
 
                     <div>
                       <p className="text-sm font-medium text-gray-200">
-                        Set permissions for <span className="text-white">{selectedServerName}</span>
+                        Roles on <span className="text-white">{selectedServerName}</span>
                       </p>
-                      <p className="mt-2 text-sm font-medium text-gray-200">Quick presets</p>
-                      {(() => {
-                        const ADDON_PERMS = ['minecraft.addons.read', 'minecraft.addons.write'];
-                        const filterAddons = (perms: string[]) =>
-                          isMinecraftWithAddons ? perms : perms.filter((p) => !ADDON_PERMS.includes(p));
-                        const gamePresets = isMinecraftOvhcloudServer
-                          ? MINECRAFT_PRESETS.map((p) => ({ ...p, permissions: filterAddons(p.permissions) }))
-                          : isHytaleOvhcloudServer ? HYTALE_PRESETS
-                          : isPalworldOvhcloudServer ? PALWORLD_PRESETS
-                          : isProjectZomboidOvhcloudServer ? PROJECT_ZOMBOID_PRESETS
-                          : isRustOvhcloudServer ? RUST_PRESETS
-                          : isValheimOvhcloudServer ? VALHEIM_PRESETS
-                          : isCs2OvhcloudServer ? CS2_PRESETS
-                          : null;
-                        const presetChips = !gamePresets
-                          ? SERVER_PRESETS
-                          : (() => {
-                              const [gameViewer, gameOperator] = gamePresets;
-                              return SERVER_PRESETS.map((p) =>
-                                p.id === 'viewer' && gameViewer ? { ...gameViewer, label: p.label }
-                                : p.id === 'operator' && gameOperator ? { ...gameOperator, label: p.label }
-                                : p
-                              );
-                            })();
-                        const noAccessActive = addMemberPerms.length === 0;
-                        const customActive =
-                          !noAccessActive &&
-                          !presetChips.some((preset) => samePermissionSet(addMemberPerms, preset.permissions));
-                        const chipBase = 'rounded-full border px-3 py-1.5 text-xs transition-colors';
-                        const activeChip =
-                          'gp-preset-active border-[var(--color-cyan-400)] bg-[#0050D7]/20 text-[var(--color-cyan-400)] ring-2 ring-[var(--color-cyan-400)]';
-                        const idleChip =
-                          'border-gray-600 bg-[#111827] text-gray-300 hover:border-[var(--color-cyan-400)] hover:text-[var(--color-cyan-400)]';
-                        return (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <AppButton
-                              type="button"
-                              onClick={() => setAddMemberKnown([])}
-                              className={`${chipBase} ${noAccessActive ? activeChip : idleChip}`}
-                            >
-                              No access
-                            </AppButton>
-                            {presetChips.map((preset) => {
-                              const active = samePermissionSet(addMemberPerms, preset.permissions);
-                              return (
-                                <AppButton
-                                  key={`edit-preset-${preset.id}`}
-                                  type="button"
-                                  onClick={() => applyAddPreset(preset.id)}
-                                  className={`${chipBase} ${active ? activeChip : idleChip}`}
-                                >
-                                  {preset.label}
-                                </AppButton>
-                              );
-                            })}
-                            <AppButton
-                              type="button"
-                              aria-disabled="true"
-                              tabIndex={-1}
-                              className={`${chipBase} pointer-events-none cursor-default ${
-                                customActive ? activeChip : `${idleChip} opacity-60`
-                              }`}
-                            >
-                              Custom
-                            </AppButton>
-                          </div>
-                        );
-                      })()}
+                      <div className="mt-2 space-y-2">
+                        {serverRoles.map((role) => (
+                          <RoleToggle
+                            key={`server-role-${role.id}`}
+                            role={role}
+                            checked={selectedServerRoleIds.includes(role.id)}
+                            onChange={() => onToggleServerRole(role.id)}
+                          />
+                        ))}
+                        {serverRoles.length === 0 && (
+                          <p className="text-sm text-gray-400">No server roles defined yet.</p>
+                        )}
+                      </div>
+                      <p className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                        Roles marked “managed by SSO” are granted automatically from your identity provider and cannot be assigned here.
+                      </p>
                     </div>
-
-                    {[
-                      { label: 'General', options: SERVER_GENERAL_OPTIONS },
-                      { label: 'File Manager', options: FILE_MANAGER_OPTIONS },
-                      { label: 'Scheduled Tasks', options: SCHEDULED_TASKS_OPTIONS },
-                    ].map(({ label, options }) => (
-                      <div key={label}>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">{label}</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {options.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-
-                    {!isExternalServer && !isCs2OvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Backups</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {BACKUP_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {!isExternalServer && wipeOptions.length > 0 && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Wipe</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {wipeOptions.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isMinecraftOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Minecraft</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {MINECRAFT_OVHCLOUD_OPTIONS.filter((opt) =>
-                            isMinecraftWithAddons || (!opt.value.includes('addons'))
-                          ).map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isHytaleOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Hytale</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {HYTALE_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isPalworldOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Palworld</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {PALWORLD_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isProjectZomboidOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Project Zomboid</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {PROJECT_ZOMBOID_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isRustOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Rust</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {RUST_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isValheimOvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Valheim</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {VALHEIM_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {isCs2OvhcloudServer && (
-                      <div>
-                        <span className="mb-2 block text-xs font-medium text-gray-400">Counter-Strike 2</span>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          {CS2_OVHCLOUD_OPTIONS.map((opt) => {
-                            const checked = isServerPermissionChecked(addMemberKnown, opt.value);
-                            return (
-                              <AppToggle
-                                key={`server-opt-${opt.value}`}
-                                ariaLabel={opt.label}
-                                checked={checked}
-                                size="compact"
-                                onChange={() =>
-                                  setAddMemberKnown((current) =>
-                                    toggleServerPermission(current, opt.value)
-                                  )
-                                }
-                                label={opt.label}
-                                className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-                                  checked
-                                    ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
-                                    : 'border-gray-700 bg-[#111827]'
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </section>
 

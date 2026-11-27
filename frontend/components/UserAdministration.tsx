@@ -4,23 +4,15 @@ import {
   CheckCircle2,
   RefreshCw,
 } from 'lucide-react';
-import { apiClient } from '../utils/api';
+import { apiClient, type PanelRole } from '../utils/api';
 import { CreateUserDialog } from './userAdministration/CreateUserDialog';
 import { UserEditDialog } from './userAdministration/UserEditDialog';
+import { RoleEditDialog } from './userAdministration/RoleEditDialog';
+import { RolesPanel } from './userAdministration/RolesPanel';
 import { ConfirmationModal } from './ConfirmationModal';
 import { UsersPanel } from './userAdministration/UsersPanel';
 import { AppButton } from '../src/ui/components';
-import {
-  MAX_USERS,
-  ALL_PRESETS,
-  globalPresetValues,
-  normalizePermissions,
-  samePermissionSet,
-  sanitizeServerPermissions,
-  serverPresetValues,
-  splitPermissions,
-  stripWildcard,
-} from './userAdministration/utils';
+import { MAX_USERS } from './userAdministration/utils';
 
 interface UserAdministrationProps {
   servers: Array<{ id: string; name: string; provider?: string; catalogId?: string }>;
@@ -33,7 +25,7 @@ interface PanelUser {
   username: string;
   isRoot: boolean;
   isEnabled: boolean;
-  globalPermissions: string[];
+  roles: Array<{ id: number; name: string }>;
 }
 
 interface ServerMember {
@@ -41,11 +33,18 @@ interface ServerMember {
   serverId: number;
   userId: number;
   username: string;
-  permissions: string[];
+  roles: Array<{ id: number; name: string }>;
 }
 
-function apiError(error: any, fallback: string) {
-  return error?.response?.data?.error || fallback;
+function apiError(error: unknown, fallback: string): string {
+  const responseError = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  return responseError || fallback;
+}
+
+function sameIdSet(a: number[], b: number[]): boolean {
+  const left = [...new Set(a)].sort((x, y) => x - y);
+  const right = [...new Set(b)].sort((x, y) => x - y);
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 export function UserAdministration({
@@ -57,6 +56,9 @@ export function UserAdministration({
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
 
+  const [roles, setRoles] = useState<PanelRole[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
+
   const [createUsername, setCreateUsername] = useState('');
   const [createPassword, setCreatePassword] = useState('');
   const [createPasswordConfirm, setCreatePasswordConfirm] = useState('');
@@ -67,7 +69,7 @@ export function UserAdministration({
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [username, setUsername] = useState('');
   const [enabled, setEnabled] = useState(true);
-  const [globalKnown, setGlobalKnown] = useState<string[]>([]);
+  const [selectedGlobalRoleIds, setSelectedGlobalRoleIds] = useState<number[]>([]);
   const [saveEditLoading, setSaveEditLoading] = useState(false);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
   const [newPassword, setNewPassword] = useState('');
@@ -79,7 +81,22 @@ export function UserAdministration({
   const [membersError, setMembersError] = useState<string | null>(null);
 
   const [addMemberUserId, setAddMemberUserId] = useState('');
-  const [addMemberKnown, setAddMemberKnown] = useState<string[]>([]);
+  const [selectedServerRoleIds, setSelectedServerRoleIds] = useState<number[]>([]);
+
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<PanelRole | null>(null);
+  const [roleName, setRoleName] = useState('');
+  const [roleScope, setRoleScope] = useState<'global' | 'server'>('server');
+  const [rolePermissions, setRolePermissions] = useState<string[]>([]);
+  const [ssoGroupsText, setSsoGroupsText] = useState('');
+  const [roleSaveLoading, setRoleSaveLoading] = useState(false);
+  const [roleDeleteLoading, setRoleDeleteLoading] = useState(false);
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const [roleDeleteConfirm, setRoleDeleteConfirm] = useState<
+    | { open: false }
+    | { open: true; roleId: number; roleName: string }
+  >({ open: false });
+
   const [deleteUserConfirm, setDeleteUserConfirm] = useState<
     | { open: false }
     | {
@@ -102,19 +119,10 @@ export function UserAdministration({
   const highlightedUserId = currentUserId ?? selectedUserId;
   const accessDenied = Boolean(usersError?.includes('users.manage'));
 
-  const rootUserIds = useMemo(
-    () => new Set(users.filter((u) => u.isRoot).map((u) => u.id)),
-    [users]
-  );
-  const manageableMembers = useMemo(
-    () => members.filter((m) => !rootUserIds.has(m.userId)),
-    [members, rootUserIds]
-  );
-  const selectedAccessUser = useMemo(
-    () => manageableMembers.find((m) => String(m.userId) === addMemberUserId) ?? null,
-    [manageableMembers, addMemberUserId]
-  );
   const userLimitReached = users.length >= MAX_USERS;
+
+  const globalRoles = useMemo(() => roles.filter((role) => role.scope === 'global'), [roles]);
+  const serverRoles = useMemo(() => roles.filter((role) => role.scope === 'server'), [roles]);
 
   const loadUsers = useCallback(async () => {
     setUsersLoading(true);
@@ -125,13 +133,24 @@ export function UserAdministration({
       setSelectedUserId((current) =>
         res.users.some((u) => u.id === current) ? current : (res.users[0]?.id ?? null)
       );
-    } catch (error: any) {
+    } catch (error) {
       setUsers([]);
-      setUsersError(
-        apiError(error, 'Failed to load users.')
-      );
+      setUsersError(apiError(error, 'Failed to load users.'));
     } finally {
       setUsersLoading(false);
+    }
+  }, []);
+
+  const loadRoles = useCallback(async () => {
+    setRolesLoading(true);
+    try {
+      const res = await apiClient.listRoles();
+      setRoles(res.roles);
+    } catch {
+      // The users list still works without roles; assignment gets disabled data instead.
+      setRoles([]);
+    } finally {
+      setRolesLoading(false);
     }
   }, []);
 
@@ -142,9 +161,9 @@ export function UserAdministration({
     try {
       const res = await apiClient.getServerMembers(Number(serverId));
       setMembers(res.members);
-    } catch (error: any) {
+    } catch (error) {
       setMembers([]);
-      setMembersError(apiError(error, 'Failed to load server permissions.'));
+      setMembersError(apiError(error, 'Failed to load server access.'));
     } finally {
       setMembersLoading(false);
     }
@@ -152,7 +171,8 @@ export function UserAdministration({
 
   useEffect(() => {
     loadUsers();
-  }, [loadUsers]);
+    loadRoles();
+  }, [loadUsers, loadRoles]);
 
   useEffect(() => {
     if (servers.length === 0) return;
@@ -170,21 +190,19 @@ export function UserAdministration({
     if (!selectedUser) return;
     setUsername(selectedUser.username);
     setEnabled(selectedUser.isEnabled);
-    const basePerms = selectedUser.isRoot
-      ? selectedUser.globalPermissions
-      : stripWildcard(selectedUser.globalPermissions);
-    const { known } = splitPermissions(basePerms, globalPresetValues);
-    setGlobalKnown(known);
+    setSelectedGlobalRoleIds(selectedUser.roles.map((role) => role.id));
     setNewPassword('');
     setNewPasswordConfirm('');
   }, [selectedUser]);
 
-  const allGlobalPerms = selectedUser?.isRoot
-    ? normalizePermissions([...globalKnown])
-    : stripWildcard(normalizePermissions([...globalKnown]));
-  // Only send canonical per-server permissions (no `*`, no unknown strings); the backend
-  // rejects the whole request with a 400 otherwise.
-  const addMemberPerms = sanitizeServerPermissions(normalizePermissions([...addMemberKnown]));
+  useEffect(() => {
+    if (!addMemberUserId) {
+      setSelectedServerRoleIds([]);
+      return;
+    }
+    const existing = members.find((m) => String(m.userId) === addMemberUserId);
+    setSelectedServerRoleIds(existing ? existing.roles.map((role) => role.id) : []);
+  }, [addMemberUserId, members, selectedServerId]);
 
   const resetCreateForm = useCallback(() => {
     setCreateUsername('');
@@ -228,7 +246,7 @@ export function UserAdministration({
         type: 'success',
         text: `User ${res.user?.username || usernameValue} created successfully.`,
       });
-    } catch (error: any) {
+    } catch (error) {
       setCreateError(apiError(error, 'Failed to create user.'));
     } finally {
       setCreateLoading(false);
@@ -276,7 +294,7 @@ export function UserAdministration({
       await apiClient.updateUser(selectedUser.id, {
         username: trimmedUsername,
         isEnabled: enabled,
-        globalPermissions: stripWildcard(allGlobalPerms),
+        roleIds: selectedGlobalRoleIds,
       });
 
       if (shouldResetPassword) {
@@ -287,17 +305,17 @@ export function UserAdministration({
         const selectedUserMember =
           members.find((member) => String(member.userId) === String(selectedUser.id)) ?? null;
 
-        if (addMemberPerms.length === 0) {
+        if (selectedServerRoleIds.length === 0) {
           if (selectedUserMember) {
             await apiClient.removeServerMember(Number(selectedServerId), selectedUser.id);
           }
         } else if (!selectedUserMember) {
-          await apiClient.addServerMember(Number(selectedServerId), selectedUser.id, addMemberPerms);
-        } else if (!samePermissionSet(selectedUserMember.permissions, addMemberPerms)) {
+          await apiClient.addServerMember(Number(selectedServerId), selectedUser.id, selectedServerRoleIds);
+        } else if (!sameIdSet(selectedUserMember.roles.map((role) => role.id), selectedServerRoleIds)) {
           await apiClient.updateServerMember(
             Number(selectedServerId),
             selectedUser.id,
-            addMemberPerms
+            selectedServerRoleIds
           );
         }
       }
@@ -310,7 +328,7 @@ export function UserAdministration({
       setNewPasswordConfirm('');
       setEditModalOpen(false);
       setFeedback({ type: 'success', text: 'User changes saved successfully.' });
-    } catch (error: any) {
+    } catch (error) {
       setEditError(apiError(error, 'Failed to save user changes.'));
     } finally {
       setSaveEditLoading(false);
@@ -343,31 +361,112 @@ export function UserAdministration({
       if (selectedServerId) await loadMembers(selectedServerId);
       setEditModalOpen(false);
       setFeedback({ type: 'success', text: `User ${usernameToDelete} deleted.` });
-    } catch (error: any) {
-      throw new Error(apiError(error, 'Failed to delete user.'));
+    } catch (error) {
+      setFeedback({ type: 'error', text: apiError(error, 'Failed to delete user.') });
     } finally {
       setDeleteUserLoading(false);
+      setDeleteUserConfirm({ open: false });
     }
   };
 
-  useEffect(() => {
-    if (!addMemberUserId) {
-      setAddMemberKnown([]);
-      return;
-    }
-    const existing = members.find((m) => String(m.userId) === addMemberUserId);
-    if (!existing) {
-      setAddMemberKnown([]);
-      return;
-    }
-    const { known } = splitPermissions(existing.permissions, serverPresetValues);
-    setAddMemberKnown(known);
-  }, [addMemberUserId, members]);
+  const openRoleCreate = () => {
+    setEditingRole(null);
+    setRoleName('');
+    setRoleScope('server');
+    setRolePermissions([]);
+    setSsoGroupsText('');
+    setRoleError(null);
+    setRoleModalOpen(true);
+  };
 
-  const applyAddPreset = (presetId: string) => {
-    const preset = ALL_PRESETS.find((x) => x.id === presetId);
-    if (!preset) return;
-    setAddMemberKnown(normalizePermissions(preset.permissions));
+  const openRoleEdit = (role: PanelRole) => {
+    setEditingRole(role);
+    setRoleName(role.name);
+    setRoleScope(role.scope);
+    setRolePermissions([...role.permissions]);
+    setSsoGroupsText(role.ssoGroups.join(', '));
+    setRoleError(null);
+    setRoleModalOpen(true);
+  };
+
+  const parseSsoGroups = (): string[] =>
+    [...new Set(
+      ssoGroupsText
+        .split(',')
+        .map((group) => group.trim())
+        .filter(Boolean)
+    )];
+
+  const handleSaveRole = async () => {
+    const trimmedName = roleName.trim();
+    if (!trimmedName) {
+      setRoleError('Role name is required.');
+      return;
+    }
+    if (trimmedName.length > 64) {
+      setRoleError('Role name must be 64 characters or fewer.');
+      return;
+    }
+    if (roleScope === 'global' && rolePermissions.length === 0 && parseSsoGroups().length === 0) {
+      setRoleError('A role needs at least one permission or SSO group.');
+      return;
+    }
+    if (roleScope === 'server' && rolePermissions.length === 0) {
+      setRoleError('A server role needs at least one permission.');
+      return;
+    }
+
+    setRoleSaveLoading(true);
+    setRoleError(null);
+    try {
+      if (editingRole) {
+        await apiClient.updateRole(editingRole.id, {
+          name: trimmedName,
+          permissions: rolePermissions,
+          ssoGroups: roleScope === 'global' ? parseSsoGroups() : undefined,
+        });
+      } else {
+        await apiClient.createRole({
+          name: trimmedName,
+          scope: roleScope,
+          permissions: rolePermissions,
+          ssoGroups: roleScope === 'global' ? parseSsoGroups() : undefined,
+        });
+      }
+
+      setRoleModalOpen(false);
+      await loadRoles();
+      setFeedback({
+        type: 'success',
+        text: editingRole ? `Role ${trimmedName} updated.` : `Role ${trimmedName} created.`,
+      });
+    } catch (error) {
+      setRoleError(apiError(error, 'Failed to save the role.'));
+    } finally {
+      setRoleSaveLoading(false);
+    }
+  };
+
+  const requestDeleteRole = (role: PanelRole) => {
+    setRoleDeleteConfirm({ open: true, roleId: role.id, roleName: role.name });
+  };
+
+  const confirmDeleteRole = async () => {
+    if (!roleDeleteConfirm.open) return;
+    const { roleId, roleName: name } = roleDeleteConfirm;
+
+    setRoleDeleteLoading(true);
+    try {
+      await apiClient.deleteRole(roleId);
+      await loadRoles();
+      setFeedback({ type: 'success', text: `Role ${name} deleted.` });
+      setRoleModalOpen(false);
+    } catch (error) {
+      setFeedback({ type: 'error', text: apiError(error, 'Failed to delete the role.') });
+    } finally {
+      setRoleDeleteLoading(false);
+      setRoleDeleteConfirm({ open: false });
+    }
   };
 
   const openUserEdit = (user: PanelUser) => {
@@ -380,18 +479,11 @@ export function UserAdministration({
     setAddMemberUserId(String(user.id));
     setUsername(user.username);
     setEnabled(user.isEnabled);
-    const basePerms = user.isRoot ? user.globalPermissions : stripWildcard(user.globalPermissions);
-    const { known } = splitPermissions(basePerms, globalPresetValues);
-    setGlobalKnown(known);
+    setSelectedGlobalRoleIds(user.roles.map((role) => role.id));
     setNewPassword('');
     setNewPasswordConfirm('');
     const existingMember = members.find((m) => String(m.userId) === String(user.id));
-    if (!existingMember) {
-      setAddMemberKnown([]);
-    } else {
-      const { known: memberKnown } = splitPermissions(existingMember.permissions, serverPresetValues);
-      setAddMemberKnown(memberKnown);
-    }
+    setSelectedServerRoleIds(existingMember ? existingMember.roles.map((role) => role.id) : []);
     setEditModalOpen(true);
   };
 
@@ -483,16 +575,27 @@ export function UserAdministration({
             setNewPassword={setNewPassword}
             newPasswordConfirm={newPasswordConfirm}
             setNewPasswordConfirm={setNewPasswordConfirm}
-            globalKnown={globalKnown}
-            setGlobalKnown={setGlobalKnown}
+            globalRoles={globalRoles}
+            selectedGlobalRoleIds={selectedGlobalRoleIds}
+            onToggleGlobalRole={(roleId) =>
+              setSelectedGlobalRoleIds((current) =>
+                current.includes(roleId)
+                  ? current.filter((id) => id !== roleId)
+                  : [...current, roleId]
+              )
+            }
+            serverRoles={serverRoles}
+            selectedServerRoleIds={selectedServerRoleIds}
+            onToggleServerRole={(roleId) =>
+              setSelectedServerRoleIds((current) =>
+                current.includes(roleId)
+                  ? current.filter((id) => id !== roleId)
+                  : [...current, roleId]
+              )
+            }
             selectedServerId={selectedServerId}
             setSelectedServerId={setSelectedServerId}
             servers={servers}
-            selectedAccessUser={selectedAccessUser}
-            addMemberPerms={addMemberPerms}
-            addMemberKnown={addMemberKnown}
-            setAddMemberKnown={setAddMemberKnown}
-            applyAddPreset={applyAddPreset}
             membersError={membersError}
             onSaveChanges={handleSaveEdit}
             saveLoading={saveEditLoading}
@@ -517,6 +620,54 @@ export function UserAdministration({
             requiredText={deleteUserConfirm.open ? deleteUserConfirm.username : undefined}
           />
 
+          <RoleEditDialog
+            open={roleModalOpen}
+            onOpenChange={(open) => {
+              setRoleModalOpen(open);
+              if (!open) {
+                setRoleError(null);
+              }
+            }}
+            editingRole={editingRole}
+            initialName={roleName}
+            initialScope={roleScope}
+            initialPermissions={rolePermissions}
+            initialSsoGroups={parseSsoGroups()}
+            setName={setRoleName}
+            setScope={setRoleScope}
+            togglePermission={(permission) =>
+              setRolePermissions((current) =>
+                current.includes(permission)
+                  ? current.filter((value) => value !== permission)
+                  : [...current, permission]
+              )
+            }
+            ssoGroupsText={ssoGroupsText}
+            setSsoGroupsText={setSsoGroupsText}
+            onSave={handleSaveRole}
+            onDelete={confirmDeleteRole}
+            saveLoading={roleSaveLoading}
+            deleteLoading={roleDeleteLoading}
+            error={roleError}
+          />
+
+          <ConfirmationModal
+            isOpen={roleDeleteConfirm.open}
+            onClose={() => {
+              if (roleDeleteLoading) return;
+              setRoleDeleteConfirm({ open: false });
+            }}
+            onConfirm={confirmDeleteRole}
+            title="Delete Role"
+            message={
+              roleDeleteConfirm.open
+                ? `Delete the role "${roleDeleteConfirm.roleName}"? Users and servers currently holding it lose its permissions.`
+                : 'This action cannot be undone.'
+            }
+            confirmText="Delete"
+            confirmButtonClass="bg-red-600 hover:bg-red-700"
+          />
+
           <UsersPanel
             users={users}
             usersLoading={usersLoading}
@@ -529,9 +680,17 @@ export function UserAdministration({
             requestDeleteUser={requestDeleteUser}
             deleteUserLoading={deleteUserLoading}
           />
+
+          <RolesPanel
+            roles={roles}
+            rolesLoading={rolesLoading}
+            setCreateModalOpen={openRoleCreate}
+            openRoleEdit={openRoleEdit}
+            requestDeleteRole={requestDeleteRole}
+            deleteRoleLoading={roleDeleteLoading}
+          />
         </>
       )}
     </div>
   );
 }
-

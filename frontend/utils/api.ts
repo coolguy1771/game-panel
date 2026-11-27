@@ -76,6 +76,16 @@ export interface FileTransferJob {
   errorMessage: string | null;
 }
 
+export interface PanelRole {
+  id: number;
+  name: string;
+  scope: 'global' | 'server';
+  permissions: string[];
+  ssoGroups: string[];
+  isSystem: boolean;
+  assignmentCounts?: { users: number; memberships: number };
+}
+
 class ApiClient {
   private client: AxiosInstance;
   private token: string | null = null;
@@ -174,13 +184,13 @@ class ApiClient {
     username: string,
     password: string,
     confirmPassword: string,
-    globalPermissions?: string[]
+    roleIds?: number[]
   ) {
     const response = await this.client.post('/api/auth/register', {
       username,
       password,
       confirmPassword,
-      ...(globalPermissions && globalPermissions.length > 0 ? { globalPermissions } : {}),
+      ...(roleIds && roleIds.length > 0 ? { roleIds } : {}),
     });
     return response.data as {
       success: true;
@@ -189,7 +199,7 @@ class ApiClient {
         username: string;
         isRoot: boolean;
         isEnabled: boolean;
-        globalPermissions?: string[];
+        roles?: Array<{ id: number; name: string }>;
       };
     };
   }
@@ -243,7 +253,7 @@ class ApiClient {
         username: string;
         isRoot: boolean;
         isEnabled: boolean;
-        globalPermissions: string[];
+        roles: Array<{ id: number; name: string }>;
         createdAt: string;
         updatedAt: string;
       }>;
@@ -255,13 +265,13 @@ class ApiClient {
     payload: Partial<{
       username: string;
       isEnabled: boolean;
-      globalPermissions: string[];
+      roleIds: number[];
     }>
   ) {
     const body: Record<string, unknown> = {};
     if (payload.username !== undefined) body.username = payload.username;
     if (payload.isEnabled !== undefined) body.isEnabled = payload.isEnabled;
-    if (payload.globalPermissions !== undefined) body.globalPermissions = payload.globalPermissions;
+    if (payload.roleIds !== undefined) body.roleIds = payload.roleIds;
 
     const response = await this.client.patch(`/api/users/${userId}`, body);
     return response.data as { success: boolean };
@@ -276,14 +286,62 @@ class ApiClient {
     username: string,
     password: string,
     confirmPassword: string,
-    globalPermissions?: string[]
+    roleIds?: number[]
   ) {
-    return this.register(username, password, confirmPassword, globalPermissions);
+    return this.register(username, password, confirmPassword, roleIds);
   }
 
   async deleteUser(userId: number) {
     const response = await this.client.delete(`/api/users/${userId}`);
     return response.data as { success: boolean };
+  }
+
+  async listRoles() {
+    const response = await this.client.get('/api/roles');
+    return response.data as { roles: PanelRole[] };
+  }
+
+  async createRole(payload: {
+    name: string;
+    scope: 'global' | 'server';
+    permissions: string[];
+    ssoGroups?: string[];
+  }) {
+    const response = await this.client.post('/api/roles', payload);
+    return response.data as { success: boolean; role: PanelRole };
+  }
+
+  async updateRole(
+    roleId: number,
+    payload: Partial<{ name: string; permissions: string[]; ssoGroups: string[] }>
+  ) {
+    const response = await this.client.patch(`/api/roles/${roleId}`, payload);
+    return response.data as { success: boolean; role: PanelRole };
+  }
+
+  async deleteRole(roleId: number) {
+    const response = await this.client.delete(`/api/roles/${roleId}`);
+    return response.data as { success: boolean };
+  }
+
+  async getSsoStatus() {
+    const response = await this.client.get('/api/auth/sso/status');
+    return response.data as { enabled: boolean; buttonLabel: string };
+  }
+
+  async exchangeSsoCode(code: string) {
+    const response = await this.client.post('/api/auth/sso/exchange', { code });
+    const data = response.data as {
+      success: true;
+      user: { id: number; username: string; isRoot: boolean; isEnabled: boolean };
+      token: string;
+    };
+
+    if (typeof data.token === 'string' && data.token.length > 0) {
+      this.setAuthToken(data.token);
+    }
+
+    return data;
   }
 
   async getServerMembers(serverId: number) {
@@ -294,24 +352,24 @@ class ApiClient {
         serverId: number;
         userId: number;
         username: string;
-        permissions: string[];
+        roles: Array<{ id: number; name: string }>;
         createdAt: string;
         updatedAt: string;
       }>;
     };
   }
 
-  async addServerMember(serverId: number, userId: number, permissions: string[]) {
+  async addServerMember(serverId: number, userId: number, roleIds: number[]) {
     const response = await this.client.post(`/api/servers/${serverId}/members`, {
       userId,
-      permissions,
+      roleIds,
     });
     return response.data as { success: boolean };
   }
 
-  async updateServerMember(serverId: number, userId: number, permissions: string[]) {
+  async updateServerMember(serverId: number, userId: number, roleIds: number[]) {
     const response = await this.client.patch(`/api/servers/${serverId}/members/${userId}`, {
-      permissions,
+      roleIds,
     });
     return response.data as { success: boolean };
   }

@@ -7,7 +7,7 @@ interface PanelUserListItem {
   username: string;
   isRoot: boolean;
   isEnabled: boolean;
-  globalPermissions: string[];
+  roles: Array<{ id: number; name: string }>;
 }
 
 interface UsersPanelProps {

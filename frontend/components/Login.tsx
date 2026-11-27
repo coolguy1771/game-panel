@@ -1,9 +1,24 @@
-import { useState } from 'react';
-import { Eye, EyeOff, Lock, User, AlertCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Eye, EyeOff, Fingerprint, Lock, User, AlertCircle } from 'lucide-react';
 import { apiClient } from '../utils/api';
 
 interface LoginProps {
   onLogin: () => void;
+}
+
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  state_mismatch: 'This sign-in attempt expired or does not match. Please try again.',
+  token_exchange_failed: 'Your identity provider rejected the sign-in. Please try again.',
+  provisioning_disabled:
+    'SSO sign-in is not open for new accounts yet. Ask an administrator to create your account.',
+  account_disabled: 'This account is disabled. Contact an administrator.',
+  sso_disabled: 'Single sign-on is not configured on this panel.',
+  unknown: 'Sign-in failed. Please try again.',
+};
+
+function ssoErrorMessage(reason: string | null): string {
+  if (!reason) return SSO_ERROR_MESSAGES.unknown;
+  return SSO_ERROR_MESSAGES[reason] ?? SSO_ERROR_MESSAGES.unknown;
 }
 
 export function Login({ onLogin }: LoginProps) {
@@ -12,6 +27,9 @@ export function Login({ onLogin }: LoginProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+  const [ssoButtonLabel, setSsoButtonLabel] = useState('Sign in with SSO');
+  const [ssoProcessing, setSsoProcessing] = useState(false);
 
   const normalizedError = error.trim().toLowerCase();
   const showError = Boolean(error);
@@ -33,6 +51,44 @@ export function Login({ onLogin }: LoginProps) {
     setPassword(e.target.value);
   };
 
+  // One-time SSO handoff: the backend redirects back here with a single-use code (or an
+  // error reason). The code is exchanged for the session token immediately.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ssoCode = params.get('sso-code');
+    const ssoError = params.get('sso-error');
+
+    if (ssoCode || ssoError) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+
+    if (ssoCode) {
+      setSsoProcessing(true);
+      apiClient
+        .exchangeSsoCode(ssoCode)
+        .then(() => onLogin())
+        .catch(() => setError('This sign-in link was already used or has expired. Please sign in again.'))
+        .finally(() => setSsoProcessing(false));
+      return;
+    }
+
+    if (ssoError) {
+      setError(ssoErrorMessage(ssoError));
+    }
+
+    apiClient
+      .getSsoStatus()
+      .then((status) => {
+        setSsoEnabled(status.enabled);
+        if (status.buttonLabel) setSsoButtonLabel(status.buttonLabel);
+      })
+      .catch(() => {
+        // Status is optional on the login screen; without it we just show password sign-in.
+      });
+    // onLogin is stable enough for mount-only execution; ESLint would flag it otherwise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !password) {
@@ -48,8 +104,9 @@ export function Login({ onLogin }: LoginProps) {
         return;
       }
       setError('Unexpected login response');
-    } catch (err: any) {
-      setError(err?.response?.data?.error || 'Invalid username or password');
+    } catch (err) {
+      const responseError = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(responseError || 'Invalid username or password');
     } finally {
       setLoading(false);
     }
@@ -193,6 +250,34 @@ export function Login({ onLogin }: LoginProps) {
                 {loading ? 'Signing in…' : 'Sign In'}
               </button>
             </form>
+
+            {ssoEnabled && (
+              <div className="mt-5">
+                <div className="flex items-center gap-3">
+                  <span className="h-px flex-1" style={{ background: '#e2e8f0' }} />
+                  <span className="text-xs font-medium uppercase" style={{ color: '#94a3b8' }}>or</span>
+                  <span className="h-px flex-1" style={{ background: '#e2e8f0' }} />
+                </div>
+                <button
+                  type="button"
+                  disabled={ssoProcessing || loading}
+                  onClick={() => {
+                    setSsoProcessing(true);
+                    window.location.assign('/api/auth/sso/login');
+                  }}
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold transition-all"
+                  style={{
+                    background: '#f8fafc',
+                    border: '1px solid #cbd5e1',
+                    color: '#0f172a',
+                    cursor: ssoProcessing || loading ? 'wait' : 'pointer',
+                  }}
+                >
+                  <Fingerprint className="h-4 w-4" />
+                  {ssoProcessing ? 'Signing in…' : ssoButtonLabel}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
