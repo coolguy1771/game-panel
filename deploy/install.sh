@@ -496,6 +496,10 @@ write_env_file() {
   local instance_id="$2"
   local instance_secret="$3"
   local telemetry_enabled="$4"
+  local sso_issuer="$5"
+  local sso_client_id="$6"
+  local sso_client_secret="$7"
+  local sso_button_label="$8"
 
   cat >"$ENV_FILE" <<EOF
 PORT=3001
@@ -515,6 +519,18 @@ TELEMETRY_API_BASE_URL=$(escape_env_value "$DB_API_BASE_URL")
 VITE_DB_API_BASE_URL=$(escape_env_value "$DB_API_BASE_URL")
 COMPOSE_PROJECT_NAME=$(escape_env_value "$COMPOSE_PROJECT_NAME")
 EOF
+
+  # SSO is written only when configured; absent vars mean the feature stays disabled.
+  if [[ -n "$sso_issuer" && -n "$sso_client_id" ]]; then
+    {
+      printf 'SSO_OIDC_ISSUER_URL=%s\n' "$(escape_env_value "$sso_issuer")"
+      printf 'SSO_OIDC_CLIENT_ID=%s\n' "$(escape_env_value "$sso_client_id")"
+      if [[ -n "$sso_client_secret" ]]; then
+        printf 'SSO_OIDC_CLIENT_SECRET=%s\n' "$(escape_env_value "$sso_client_secret")"
+      fi
+      printf 'SSO_OIDC_BUTTON_LABEL=%s\n' "$(escape_env_value "$sso_button_label")"
+    } >>"$ENV_FILE"
+  fi
 
   chown root:"$APP_GROUP" "$ENV_FILE"
   chmod 0640 "$ENV_FILE"
@@ -658,6 +674,23 @@ main() {
   ADMIN_PASSWORD="$REPLY"
   LETSENCRYPT_EMAIL="$(prompt_required "${GP_LETSENCRYPT_EMAIL:-}" "Let's Encrypt email")"
 
+  SSO_OIDC_ISSUER_URL="$(prompt_optional "${GP_SSO_OIDC_ISSUER_URL:-}" 'OIDC issuer URL for SSO (empty disables SSO)' '')"
+  SSO_OIDC_CLIENT_ID=''
+  SSO_OIDC_CLIENT_SECRET=''
+  SSO_OIDC_BUTTON_LABEL='Sign in with SSO'
+  if [[ -n "$SSO_OIDC_ISSUER_URL" ]]; then
+    SSO_OIDC_CLIENT_ID="$(prompt_optional "${GP_SSO_OIDC_CLIENT_ID:-}" 'OIDC client ID' '')"
+    if [[ -n "$SSO_OIDC_CLIENT_ID" ]]; then
+      if [[ -n "${GP_SSO_OIDC_CLIENT_SECRET:-}" ]]; then
+        SSO_OIDC_CLIENT_SECRET="$GP_SSO_OIDC_CLIENT_SECRET"
+      elif ! is_true "${GP_NON_INTERACTIVE:-0}"; then
+        read -r -s -p 'OIDC client secret (empty for public PKCE clients): ' SSO_OIDC_CLIENT_SECRET
+        printf '\n' >&2
+      fi
+      SSO_OIDC_BUTTON_LABEL="$(prompt_optional "${GP_SSO_OIDC_BUTTON_LABEL:-}" 'SSO button label' 'Sign in with SSO')"
+    fi
+  fi
+
   log "Installing system dependencies..."
   install_base_packages
 
@@ -689,7 +722,8 @@ main() {
   else
     TELEMETRY_ENABLED="false"
   fi
-  write_env_file "$JWT_SECRET" "$APP_INSTANCE_ID" "$APP_INSTANCE_SECRET" "$TELEMETRY_ENABLED"
+  write_env_file "$JWT_SECRET" "$APP_INSTANCE_ID" "$APP_INSTANCE_SECRET" "$TELEMETRY_ENABLED" \
+    "$SSO_OIDC_ISSUER_URL" "$SSO_OIDC_CLIENT_ID" "$SSO_OIDC_CLIENT_SECRET" "$SSO_OIDC_BUTTON_LABEL"
   write_compose_file
 
   log "Pulling updater image..."

@@ -131,6 +131,10 @@ services:
       APP_INSTANCE_SECRET: "${APP_INSTANCE_SECRET}"
       TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
       TELEMETRY_API_BASE_URL: "${TELEMETRY_API_BASE_URL}"
+      SSO_OIDC_ISSUER_URL: "${SSO_OIDC_ISSUER_URL:-}"
+      SSO_OIDC_CLIENT_ID: "${SSO_OIDC_CLIENT_ID:-}"
+      SSO_OIDC_CLIENT_SECRET: "${SSO_OIDC_CLIENT_SECRET:-}"
+      SSO_OIDC_BUTTON_LABEL: "${SSO_OIDC_BUTTON_LABEL:-}"
     volumes:
       - "../data:/data"
       - "/var/run/docker.sock:/var/run/docker.sock"
