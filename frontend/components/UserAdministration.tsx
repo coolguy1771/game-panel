@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -58,6 +58,7 @@ export function UserAdministration({
 
   const [roles, setRoles] = useState<PanelRole[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesError, setRolesError] = useState<string | null>(null);
 
   const [createUsername, setCreateUsername] = useState('');
   const [createPassword, setCreatePassword] = useState('');
@@ -77,8 +78,11 @@ export function UserAdministration({
 
   const [selectedServerId, setSelectedServerId] = useState('');
   const [members, setMembers] = useState<ServerMember[]>([]);
-  const [, setMembersLoading] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
   const [membersError, setMembersError] = useState<string | null>(null);
+  // Member responses are scoped to the server that was selected when they were requested;
+  // late responses for a previous server never replace the current list.
+  const selectedServerIdRef = useRef('');
 
   const [addMemberUserId, setAddMemberUserId] = useState('');
   const [selectedServerRoleIds, setSelectedServerRoleIds] = useState<number[]>([]);
@@ -88,6 +92,7 @@ export function UserAdministration({
   const [roleName, setRoleName] = useState('');
   const [roleScope, setRoleScope] = useState<'global' | 'server'>('server');
   const [rolePermissions, setRolePermissions] = useState<string[]>([]);
+  const [ssoGroupsEnabled, setSsoGroupsEnabled] = useState(false);
   const [ssoGroupsText, setSsoGroupsText] = useState('');
   const [roleSaveLoading, setRoleSaveLoading] = useState(false);
   const [roleDeleteLoading, setRoleDeleteLoading] = useState(false);
@@ -143,12 +148,13 @@ export function UserAdministration({
 
   const loadRoles = useCallback(async () => {
     setRolesLoading(true);
+    setRolesError(null);
     try {
       const res = await apiClient.listRoles();
       setRoles(res.roles);
-    } catch {
-      // The users list still works without roles; assignment gets disabled data instead.
+    } catch (error) {
       setRoles([]);
+      setRolesError(apiError(error, 'Failed to load roles.'));
     } finally {
       setRolesLoading(false);
     }
@@ -156,16 +162,22 @@ export function UserAdministration({
 
   const loadMembers = useCallback(async (serverId: string) => {
     if (!serverId) return;
+    selectedServerIdRef.current = serverId;
     setMembersLoading(true);
     setMembersError(null);
+    setMembers([]);
     try {
       const res = await apiClient.getServerMembers(Number(serverId));
+      if (selectedServerIdRef.current !== serverId) return; // stale response for a previous server
       setMembers(res.members);
     } catch (error) {
+      if (selectedServerIdRef.current !== serverId) return;
       setMembers([]);
       setMembersError(apiError(error, 'Failed to load server access.'));
     } finally {
-      setMembersLoading(false);
+      if (selectedServerIdRef.current === serverId) {
+        setMembersLoading(false);
+      }
     }
   }, []);
 
@@ -265,6 +277,8 @@ export function UserAdministration({
       setEditError('Super Admin account cannot be edited here.');
       return;
     }
+    // The membership draft is only trustworthy once the selected server's list has loaded.
+    if (membersLoading) return;
 
     const trimmedUsername = username.trim();
     if (!trimmedUsername) {
@@ -374,6 +388,7 @@ export function UserAdministration({
     setRoleName('');
     setRoleScope('server');
     setRolePermissions([]);
+    setSsoGroupsEnabled(false);
     setSsoGroupsText('');
     setRoleError(null);
     setRoleModalOpen(true);
@@ -384,15 +399,18 @@ export function UserAdministration({
     setRoleName(role.name);
     setRoleScope(role.scope);
     setRolePermissions([...role.permissions]);
-    setSsoGroupsText(role.ssoGroups.join(', '));
+    setSsoGroupsEnabled(role.ssoGroups.length > 0);
+    setSsoGroupsText(role.ssoGroups.join('\n'));
     setRoleError(null);
     setRoleModalOpen(true);
   };
 
+  // One group per line: group identifiers may legitimately contain commas (LDAP DNs), so
+  // commas are never treated as separators.
   const parseSsoGroups = (): string[] =>
     [...new Set(
       ssoGroupsText
-        .split(',')
+        .split('\n')
         .map((group) => group.trim())
         .filter(Boolean)
     )];
@@ -407,7 +425,8 @@ export function UserAdministration({
       setRoleError('Role name must be 64 characters or fewer.');
       return;
     }
-    if (roleScope === 'global' && rolePermissions.length === 0 && parseSsoGroups().length === 0) {
+    const nextSsoGroups = roleScope === 'global' && ssoGroupsEnabled ? parseSsoGroups() : [];
+    if (roleScope === 'global' && rolePermissions.length === 0 && nextSsoGroups.length === 0) {
       setRoleError('A role needs at least one permission or SSO group.');
       return;
     }
@@ -423,14 +442,14 @@ export function UserAdministration({
         await apiClient.updateRole(editingRole.id, {
           name: trimmedName,
           permissions: rolePermissions,
-          ssoGroups: roleScope === 'global' ? parseSsoGroups() : undefined,
+          ssoGroups: roleScope === 'global' ? nextSsoGroups : undefined,
         });
       } else {
         await apiClient.createRole({
           name: trimmedName,
           scope: roleScope,
           permissions: rolePermissions,
-          ssoGroups: roleScope === 'global' ? parseSsoGroups() : undefined,
+          ssoGroups: roleScope === 'global' ? nextSsoGroups : undefined,
         });
       }
 
@@ -458,7 +477,9 @@ export function UserAdministration({
     setRoleDeleteLoading(true);
     try {
       await apiClient.deleteRole(roleId);
-      await loadRoles();
+      // Users still carry the deleted role id in their cached assignments; reload both so
+      // the next edit does not submit a deleted id.
+      await Promise.all([loadRoles(), loadUsers()]);
       setFeedback({ type: 'success', text: `Role ${name} deleted.` });
       setRoleModalOpen(false);
     } catch (error) {
@@ -596,6 +617,7 @@ export function UserAdministration({
             selectedServerId={selectedServerId}
             setSelectedServerId={setSelectedServerId}
             servers={servers}
+            membersLoading={membersLoading}
             membersError={membersError}
             onSaveChanges={handleSaveEdit}
             saveLoading={saveEditLoading}
@@ -632,7 +654,8 @@ export function UserAdministration({
             initialName={roleName}
             initialScope={roleScope}
             initialPermissions={rolePermissions}
-            initialSsoGroups={parseSsoGroups()}
+            ssoGroupsEnabled={ssoGroupsEnabled}
+            setSsoGroupsEnabled={setSsoGroupsEnabled}
             setName={setRoleName}
             setScope={setRoleScope}
             togglePermission={(permission) =>
@@ -645,7 +668,9 @@ export function UserAdministration({
             ssoGroupsText={ssoGroupsText}
             setSsoGroupsText={setSsoGroupsText}
             onSave={handleSaveRole}
-            onDelete={confirmDeleteRole}
+            onDelete={() => {
+              if (editingRole) requestDeleteRole(editingRole);
+            }}
             saveLoading={roleSaveLoading}
             deleteLoading={roleDeleteLoading}
             error={roleError}
@@ -684,6 +709,8 @@ export function UserAdministration({
           <RolesPanel
             roles={roles}
             rolesLoading={rolesLoading}
+            rolesError={rolesError}
+            onRetry={loadRoles}
             setCreateModalOpen={openRoleCreate}
             openRoleEdit={openRoleEdit}
             requestDeleteRole={requestDeleteRole}

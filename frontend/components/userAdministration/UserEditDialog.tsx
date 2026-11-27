@@ -31,6 +31,7 @@ interface UserEditDialogProps {
   selectedServerId: string;
   setSelectedServerId: (serverId: string) => void;
   servers: Array<{ id: string; name: string; provider?: string; catalogId?: string }>;
+  membersLoading: boolean;
   membersError: string | null;
   onSaveChanges: () => void;
   saveLoading: boolean;
@@ -88,6 +89,7 @@ export function UserEditDialog({
   selectedServerId,
   setSelectedServerId,
   servers,
+  membersLoading,
   membersError,
   onSaveChanges,
   saveLoading,
@@ -98,7 +100,9 @@ export function UserEditDialog({
 
   const selectedServer = servers.find((server) => server.id === selectedServerId);
   const selectedServerName = selectedServer?.name || 'this server';
-  const isBusy = saveLoading;
+  // Saving is blocked until the selected server's member list (and therefore the role
+  // draft) reflects the server actually shown.
+  const isBusy = saveLoading || membersLoading;
 
   const accessSummary =
     selectedServerRoleIds.length === 0

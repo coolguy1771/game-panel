@@ -62,20 +62,12 @@ export function Login({ onLogin }: LoginProps) {
       window.history.replaceState(null, '', window.location.pathname);
     }
 
-    if (ssoCode) {
-      setSsoProcessing(true);
-      apiClient
-        .exchangeSsoCode(ssoCode)
-        .then(() => onLogin())
-        .catch(() => setError('This sign-in link was already used or has expired. Please sign in again.'))
-        .finally(() => setSsoProcessing(false));
-      return;
-    }
-
     if (ssoError) {
       setError(ssoErrorMessage(ssoError));
     }
 
+    // Availability loads independently of any exchange outcome: after a failed exchange the
+    // user must still see the SSO button (some installs have no local accounts).
     apiClient
       .getSsoStatus()
       .then((status) => {
@@ -85,6 +77,15 @@ export function Login({ onLogin }: LoginProps) {
       .catch(() => {
         // Status is optional on the login screen; without it we just show password sign-in.
       });
+
+    if (ssoCode) {
+      setSsoProcessing(true);
+      apiClient
+        .exchangeSsoCode(ssoCode)
+        .then(() => onLogin())
+        .catch(() => setError('This sign-in link was already used or has expired. Please sign in again.'))
+        .finally(() => setSsoProcessing(false));
+    }
     // onLogin is stable enough for mount-only execution; ESLint would flag it otherwise.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

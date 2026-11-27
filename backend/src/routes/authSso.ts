@@ -129,16 +129,24 @@ router.post('/exchange', async (req: Request, res: Response) => {
     const code = typeof body.code === 'string' ? body.code.trim() : '';
     if (!code) return res.status(400).json({ error: 'Missing code' });
 
-    if (!ssoRateLimiter.ensureAllowed(req, res, 'sso-exchange')) return;
+    if (!ssoRateLimiter.ensureAllowed(req, res, req.ip ?? 'unknown')) return;
 
     const userId = await ssoLoginCodeRepository.consume(code);
-    if (!userId) return res.status(401).json({ error: 'Invalid or expired login code' });
+    if (!userId) {
+      // Invalid or expired codes count toward the client's rate bucket so brute-forcing
+      // codes is throttled. Keyed per client IP, never globally.
+      ssoRateLimiter.noteFailure(req, req.ip ?? 'unknown');
+      return res.status(401).json({ error: 'Invalid or expired login code' });
+    }
 
     const user = await userRepository.findById(userId);
-    if (!user) return res.status(401).json({ error: 'Invalid or expired login code' });
+    if (!user) {
+      ssoRateLimiter.noteFailure(req, req.ip ?? 'unknown');
+      return res.status(401).json({ error: 'Invalid or expired login code' });
+    }
     if (!user.is_enabled) return res.status(403).json({ error: 'Account disabled' });
 
-    ssoRateLimiter.clear(req, 'sso-exchange');
+    ssoRateLimiter.clear(req, req.ip ?? 'unknown');
 
     const token = generateToken({
       userId: user.id,

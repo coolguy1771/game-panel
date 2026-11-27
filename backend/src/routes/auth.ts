@@ -2,7 +2,6 @@ import { Router, type Request, type Response } from 'express';
 import { type AuthenticatedRequest, authMiddleware, requireGlobalPermission } from '../middleware/auth.js';
 import { comparePasswords, generateToken, hashPassword } from '../utils/auth.js';
 import { userRepository, serverMemberRepository, roleRepository } from '../database/index.js';
-import { getDatabase } from '../database/init.js';
 import { withDatabaseTransaction } from '../database/transaction.js';
 import { asNonEmptyString } from './users.js';
 import { sendRouteError } from '../utils/routeErrors.js';
@@ -70,7 +69,7 @@ router.post(
       const passwordHash = await hashPassword(password);
 
       // Create user (enabled by default) with its initial global roles atomically.
-      const userId = await withDatabaseTransaction(await getDatabase(), async () => {
+      const userId = await withDatabaseTransaction(async () => {
         const newUserId = await userRepository.create(normalizedUsername, passwordHash, {});
         if (!newUserId) throw new Error('Failed to create user');
         await roleRepository.setGlobalRoles(newUserId, globalRoleIds);

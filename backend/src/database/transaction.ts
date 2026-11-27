@@ -1,31 +1,37 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Database } from 'sqlite';
+import { openDatabaseConnection } from './init.js';
 
-const inTransaction = new AsyncLocalStorage<true>();
+const transactionConnection = new AsyncLocalStorage<Database>();
 
-// The backend uses a single SQLite connection, so concurrent requests must not interleave
-// BEGIN/COMMIT. Outermost transaction wins a queue slot; nested calls (same async chain)
-// join the open transaction instead of starting a new one.
-let queue: Promise<unknown> = Promise.resolve();
+// The connection to use for database work on the current async chain: the open
+// transaction's dedicated connection when inside withDatabaseTransaction, otherwise the
+// shared application connection.
+export function currentTransactionConnection(): Database | undefined {
+  return transactionConnection.getStore();
+}
 
-export function withDatabaseTransaction<T>(db: Database, work: () => Promise<T>): Promise<T> {
-  if (inTransaction.getStore()) return work();
+// Runs work on a dedicated connection inside one transaction. Repositories resolve their
+// handle through currentTransactionConnection(), so every statement issued inside the
+// callback - reads included - shares the transaction, and concurrent requests on the main
+// connection can never interleave with it. SQLite serializes the two connections at the
+// file level; busy_timeout turns contention into a short wait instead of an error.
+export async function withDatabaseTransaction<T>(work: (db: Database) => Promise<T>): Promise<T> {
+  const existing = transactionConnection.getStore();
+  if (existing) return work(existing);
 
-  const run = queue.then(() =>
-    inTransaction.run(true, async () => {
-      await db.exec('BEGIN');
-      try {
-        const result = await work();
-        await db.exec('COMMIT');
-        return result;
-      } catch (error) {
-        await db.exec('ROLLBACK');
-        throw error;
-      }
-    })
-  );
-
-  // Keep the queue alive regardless of individual failures.
-  queue = run.catch(() => undefined);
-  return run;
+  const db = await openDatabaseConnection();
+  try {
+    await db.exec('BEGIN');
+    try {
+      const result = await transactionConnection.run(db, () => work(db));
+      await db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      await db.exec('ROLLBACK').catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    await db.close();
+  }
 }

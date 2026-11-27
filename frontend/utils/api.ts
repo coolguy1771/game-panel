@@ -113,7 +113,11 @@ class ApiClient {
       (error: AxiosError) => {
         const status = error.response?.status;
         const requestUrl = String(error.config?.url || '').toLowerCase();
-        const isAuthLoginRequest = requestUrl.includes('/api/auth/login');
+        // A failed one-time SSO code exchange says nothing about the stored session; do not
+        // sign the user out over it.
+        const isAuthLoginRequest =
+          requestUrl.includes('/api/auth/login') ||
+          requestUrl.includes('/api/auth/sso/exchange');
 
         if (status === 401 && !isAuthLoginRequest) {
           this.clearAuth();

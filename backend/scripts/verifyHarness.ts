@@ -38,10 +38,16 @@ export async function startVerifyHarness(port: number): Promise<{ close: () => P
   app.use('/api/roles', authMiddleware, roleRoutes);
   app.use('/api/servers', authMiddleware, serverMembersRoutes);
 
+  const httpServer = app.listen(port, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
-    const server = app.listen(port, '127.0.0.1', () => resolve());
-    server.on('error', reject);
+    httpServer.once('listening', () => resolve());
+    httpServer.once('error', reject);
   });
 
-  return { close: () => Promise.resolve() };
+  return {
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
 }

@@ -1,7 +1,6 @@
 import { BaseRepository } from './base.js';
 import { nowIso } from '../../utils/time.js';
 import { parsePermissionsJson } from '../../utils/permissionList.js';
-import { withDatabaseTransaction } from '../transaction.js';
 
 export type RoleScope = 'global' | 'server';
 
@@ -161,21 +160,20 @@ export class RoleRepository extends BaseRepository {
     return rows;
   }
 
-  // Replaces the user's global role assignments in one transaction. Joins an outer
-  // transaction when called inside withDatabaseTransaction.
+  // Replaces the user's global role assignments. Statements run on the caller's
+  // transaction connection when inside withDatabaseTransaction, else on the shared one;
+  // multi-statement callers must wrap this together with their other writes.
   async setGlobalRoles(userId: number, roleIds: number[]): Promise<void> {
     const db = await this.ensureDb();
     const unique = [...new Set(roleIds)];
 
-    await withDatabaseTransaction(db, async () => {
-      await db.run('DELETE FROM user_roles WHERE user_id = ?', [userId]);
-      for (const roleId of unique) {
-        await db.run(
-          'INSERT INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)',
-          [userId, roleId, nowIso()]
-        );
-      }
-    });
+    await db.run('DELETE FROM user_roles WHERE user_id = ?', [userId]);
+    for (const roleId of unique) {
+      await db.run(
+        'INSERT INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)',
+        [userId, roleId, nowIso()]
+      );
+    }
   }
 
   async listServerRoleIds(serverId: number, userId: number): Promise<number[]> {
@@ -187,24 +185,22 @@ export class RoleRepository extends BaseRepository {
     return rows.map((row) => row.role_id);
   }
 
-  // Replaces a membership's role assignments in one transaction. Caller must ensure the
-  // membership exists (the composite FK enforces it at the database level). Joins an outer
-  // transaction when called inside withDatabaseTransaction.
+  // Replaces a membership's role assignments. Caller must ensure the membership exists
+  // (the composite FK enforces it) and wrap multi-statement sequences in
+  // withDatabaseTransaction.
   async setServerMemberRoles(serverId: number, userId: number, roleIds: number[]): Promise<void> {
     const db = await this.ensureDb();
     const unique = [...new Set(roleIds)];
 
-    await withDatabaseTransaction(db, async () => {
-      await db.run('DELETE FROM server_member_roles WHERE server_id = ? AND user_id = ?', [
-        serverId,
-        userId,
-      ]);
-      for (const roleId of unique) {
-        await db.run(
-          'INSERT INTO server_member_roles (server_id, user_id, role_id, created_at) VALUES (?, ?, ?, ?)',
-          [serverId, userId, roleId, nowIso()]
-        );
-      }
-    });
+    await db.run('DELETE FROM server_member_roles WHERE server_id = ? AND user_id = ?', [
+      serverId,
+      userId,
+    ]);
+    for (const roleId of unique) {
+      await db.run(
+        'INSERT INTO server_member_roles (server_id, user_id, role_id, created_at) VALUES (?, ?, ?, ?)',
+        [serverId, userId, roleId, nowIso()]
+      );
+    }
   }
 }

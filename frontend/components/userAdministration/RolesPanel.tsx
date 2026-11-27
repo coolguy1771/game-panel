@@ -5,6 +5,8 @@ import type { PanelRole } from '../../utils/api';
 interface RolesPanelProps {
   roles: PanelRole[];
   rolesLoading: boolean;
+  rolesError?: string | null;
+  onRetry?: () => void;
   setCreateModalOpen: (open: boolean) => void;
   openRoleEdit: (role: PanelRole) => void;
   requestDeleteRole: (role: PanelRole) => void;
@@ -19,6 +21,8 @@ const SCOPE_LABELS: Record<PanelRole['scope'], string> = {
 export function RolesPanel({
   roles,
   rolesLoading,
+  rolesError,
+  onRetry,
   setCreateModalOpen,
   openRoleEdit,
   requestDeleteRole,
@@ -41,7 +45,22 @@ export function RolesPanel({
       </div>
 
       <div className="space-y-3">
-        {roles.length === 0 && !rolesLoading && (
+        {rolesError && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
+            <p className="text-sm">{rolesError}</p>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-2 rounded bg-red-600 px-3 py-1.5 text-xs text-white hover:bg-red-500"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
+        {roles.length === 0 && !rolesLoading && !rolesError && (
           <p className="text-sm text-gray-400">No roles defined yet.</p>
         )}
 

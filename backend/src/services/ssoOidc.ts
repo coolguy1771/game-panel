@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { getConfig } from '../config.js';
 import { userRepository, roleRepository, ssoLoginCodeRepository } from '../database/index.js';
-import { getDatabase } from '../database/init.js';
 import { withDatabaseTransaction } from '../database/transaction.js';
 import { deriveSsoUsername, selectRolesForGroups } from '../utils/ssoHelpers.js';
 import { logError, logInfo } from '../utils/logger.js';
@@ -58,10 +57,16 @@ async function discoverOidcConfiguration(sso: OidcRuntime['sso']): Promise<oidc.
     const cause = (error as { cause?: { body?: { issuer?: unknown } } }).cause;
     const declaredIssuer = typeof cause?.body?.issuer === 'string' ? cause.body.issuer : null;
 
+    // Re-anchor only when the two issuer strings differ by a trailing slash at most - the
+    // Authentik papercut. A metadata document naming a different host or path is never
+    // trusted; the operator-configured issuer stays the binding.
+    const stripTrailingSlash = (value: string): string => value.replace(/\/$/, '');
+
     if (
       error instanceof oidc.ClientError &&
       declaredIssuer &&
-      declaredIssuer !== sso.issuerUrl
+      declaredIssuer !== sso.issuerUrl &&
+      stripTrailingSlash(declaredIssuer) === stripTrailingSlash(sso.issuerUrl)
     ) {
       logInfo(
         'SSO:DISCOVERY',
@@ -218,7 +223,7 @@ export async function completeSsoLogin(input: {
     // SSO accounts never authenticate with a password; this hash is unusable garbage.
     const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('base64url'), 10);
 
-    user = await withDatabaseTransaction(await getDatabase(), async () => {
+    user = await withDatabaseTransaction(async () => {
       const userId = await userRepository.createSsoUser({
         username,
         passwordHash,
@@ -243,7 +248,7 @@ export async function completeSsoLogin(input: {
   if (!created) {
     const sso = requireSsoConfig();
     const groups = readGroupsClaim(claims as Record<string, unknown>, sso.groupsClaim);
-    await withDatabaseTransaction(await getDatabase(), async () => {
+    await withDatabaseTransaction(async () => {
       await userRepository.touchSsoLogin(user!.id, email);
       await syncSsoManagedRoles(user!.id, groups);
     });

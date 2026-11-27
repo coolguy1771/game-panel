@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../permissions.js';
 import { toIsoTimestamp } from '../utils/time.js';
 import { optionalBoolean, requireBodyObject, requirePositiveInt, idArray } from '../utils/httpValidation.js';
 import { resolveAssignableRoles } from '../services/roleAssignment.js';
+import { withDatabaseTransaction } from '../database/transaction.js';
 
 const router = Router();
 
@@ -93,19 +94,42 @@ router.patch(
             let roleIds: number[] | undefined = undefined;
             if (body.roleIds !== undefined) {
                 roleIds = idArray(body.roleIds, 'roleIds must be an array of role ids');
-                await resolveAssignableRoles(roleIds, 'global');
+
+                // Only the delta is validated for manual assignment: clients resubmit the
+                // user's full set, which may include SSO-managed roles that must pass
+                // through untouched (the SSO sync removes those, never an admin edit).
+                const currentRoleIds = await roleRepository.listGlobalRoleIdsByUser(id);
+                const submitted = new Set(roleIds);
+                const added = roleIds.filter((roleId) => !currentRoleIds.includes(roleId));
+                const removed = currentRoleIds.filter((roleId) => !submitted.has(roleId));
+
+                await resolveAssignableRoles(added, 'global');
+
+                const removedRoles = await Promise.all(
+                    removed.map((roleId) => roleRepository.findById(roleId))
+                );
+                const removedManaged = removedRoles.find(
+                    (role) => role && role.ssoGroups.length > 0
+                );
+                if (removedManaged) {
+                    return res.status(400).json({
+                        error: `Role "${removedManaged.name}" is managed by SSO and cannot be removed manually`,
+                    });
+                }
             }
 
             const isEnabled = optionalBoolean(body.isEnabled, 'isEnabled must be a boolean');
 
-            await userRepository.updateUser(id, {
-                username: normalizedUsername ?? undefined,
-                is_enabled: isEnabled,
-            });
+            await withDatabaseTransaction(async () => {
+                await userRepository.updateUser(id, {
+                    username: normalizedUsername ?? undefined,
+                    is_enabled: isEnabled,
+                });
 
-            if (roleIds !== undefined) {
-                await roleRepository.setGlobalRoles(id, roleIds);
-            }
+                if (roleIds !== undefined) {
+                    await roleRepository.setGlobalRoles(id, roleIds);
+                }
+            });
 
             return res.json({ success: true });
         } catch (error) {

@@ -136,6 +136,9 @@ services:
       SSO_OIDC_CLIENT_SECRET: "${SSO_OIDC_CLIENT_SECRET:-}"
       SSO_OIDC_BUTTON_LABEL: "${SSO_OIDC_BUTTON_LABEL:-}"
       SSO_OIDC_ADMIN_GROUPS: "${SSO_OIDC_ADMIN_GROUPS:-}"
+      SSO_OIDC_SCOPES: "${SSO_OIDC_SCOPES:-}"
+      SSO_OIDC_GROUPS_CLAIM: "${SSO_OIDC_GROUPS_CLAIM:-}"
+      SSO_OIDC_AUTO_PROVISION: "${SSO_OIDC_AUTO_PROVISION:-}"
     volumes:
       - "../data:/data"
       - "/var/run/docker.sock:/var/run/docker.sock"

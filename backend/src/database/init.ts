@@ -35,6 +35,8 @@ async function openAndInitialize(): Promise<Database> {
   });
 
   await database.exec('PRAGMA foreign_keys = ON');
+  // Cross-connection writers (see withDatabaseTransaction) wait instead of failing.
+  await database.exec('PRAGMA busy_timeout = 5000');
 
   const freshDatabase = await isFreshDatabase(database);
   await ensureSchemaMigrationsTable(database);
@@ -53,6 +55,14 @@ async function openAndInitialize(): Promise<Database> {
 export async function getDatabase(): Promise<Database> {
   if (!db) return initializeDatabase();
   return db;
+}
+
+// Opens an independent connection to the same SQLite file for transactional work.
+export async function openDatabaseConnection(): Promise<Database> {
+  const database = await open({ filename: dbFilePath, driver: sqlite3.Database });
+  await database.exec('PRAGMA foreign_keys = ON');
+  await database.exec('PRAGMA busy_timeout = 5000');
+  return database;
 }
 
 export async function closeDatabase(): Promise<void> {

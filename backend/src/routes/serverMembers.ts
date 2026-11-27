@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { requireGlobalPermission } from '../middleware/auth.js';
 import { roleRepository, serverMemberRepository, serverRepository, userRepository } from '../database/index.js';
-import { getDatabase } from '../database/init.js';
 import { withDatabaseTransaction } from '../database/transaction.js';
 import { sendRouteError } from '../utils/routeErrors.js';
 import { PERMISSIONS } from '../permissions.js';
@@ -68,7 +67,7 @@ router.post(
             const existing = await serverMemberRepository.find(serverId, userId);
             if (existing) return res.status(409).json({ error: 'User already assigned to server' });
 
-            await withDatabaseTransaction(await getDatabase(), async () => {
+            await withDatabaseTransaction(async () => {
               await serverMemberRepository.create(serverId, userId);
               await roleRepository.setServerMemberRoles(serverId, userId, roleIds);
             });
@@ -101,7 +100,7 @@ router.patch(
             const existing = await serverMemberRepository.find(serverId, userId);
             if (!existing) return res.status(404).json({ error: 'Membership not found' });
 
-            await withDatabaseTransaction(await getDatabase(), async () => {
+            await withDatabaseTransaction(async () => {
               await serverMemberRepository.update(serverId, userId);
               await roleRepository.setServerMemberRoles(serverId, userId, roleIds);
             });

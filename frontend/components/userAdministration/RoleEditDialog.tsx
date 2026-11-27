@@ -1,6 +1,4 @@
-import { useState } from 'react';
-import { AlertCircle, Save, Trash2 } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
+import { AlertCircle, Save, Trash2 } from 'lucide-react';import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { AppButton, AppInput, AppSelect, AppToggle } from '../../src/ui/components';
 import {
   BACKUP_OPTIONS,
@@ -42,7 +40,8 @@ interface RoleEditDialogProps {
   initialName: string;
   initialScope: 'global' | 'server';
   initialPermissions: string[];
-  initialSsoGroups: string[];
+  ssoGroupsEnabled: boolean;
+  setSsoGroupsEnabled: (enabled: boolean) => void;
   setName: (value: string) => void;
   setScope: (scope: 'global' | 'server') => void;
   togglePermission: (permission: string) => void;
@@ -62,7 +61,8 @@ export function RoleEditDialog({
   initialName,
   initialScope,
   initialPermissions,
-  initialSsoGroups,
+  ssoGroupsEnabled,
+  setSsoGroupsEnabled,
   setName,
   setScope,
   togglePermission,
@@ -74,7 +74,6 @@ export function RoleEditDialog({
   deleteLoading,
   error,
 }: RoleEditDialogProps) {
-  const [showSsoGroups, setShowSsoGroups] = useState(initialSsoGroups.length > 0);
   const isEdit = Boolean(editingRole);
   const isSystem = Boolean(editingRole?.isSystem);
 
@@ -83,8 +82,10 @@ export function RoleEditDialog({
       ? [{ label: 'Panel permissions', options: GLOBAL_OPTIONS.filter((opt) => opt.value !== '*') }]
       : SERVER_PERMISSION_GROUPS;
 
+  // One group per line: identifiers may contain commas (LDAP DNs) and must round-trip
+  // exactly as the claim carries them.
   const parsedSsoGroups = ssoGroupsText
-    .split(',')
+    .split('\n')
     .map((group) => group.trim())
     .filter(Boolean);
 
@@ -175,21 +176,25 @@ export function RoleEditDialog({
                   </div>
                   <AppToggle
                     ariaLabel="Managed by SSO"
-                    checked={showSsoGroups}
+                    checked={ssoGroupsEnabled}
                     size="compact"
-                    onChange={() => setShowSsoGroups((current) => !current)}
+                    onChange={() => setSsoGroupsEnabled(!ssoGroupsEnabled)}
                   />
                 </div>
-                {showSsoGroups && (
+                {ssoGroupsEnabled && (
                   <div className="mt-3">
-                    <AppInput
+                    <textarea
                       value={ssoGroupsText}
                       onChange={(event) => setSsoGroupsText(event.target.value)}
-                      placeholder="group-a, group-b"
+                      placeholder={'group-a\ngroup-b'}
                       name="role-sso-groups"
                       autoComplete="off"
-                      className="w-full rounded border border-gray-700 bg-[#0f172a] px-3 py-2 text-sm text-white"
+                      rows={3}
+                      className="w-full rounded border border-gray-700 bg-[#0f172a] px-3 py-2 text-sm text-white focus:border-[var(--color-cyan-400)] focus:outline-none"
                     />
+                    <p className="mt-1 text-xs text-gray-500">
+                      One group per line, exactly as the identity provider sends it.
+                    </p>
                     {parsedSsoGroups.length > 0 && (
                       <p className="mt-1 text-xs text-gray-500">
                         Claims group value must match exactly: {parsedSsoGroups.join(', ')}
