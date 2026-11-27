@@ -1,4 +1,3 @@
-import { PERMISSIONS } from '../../permissions.js';
 import { SYSTEM_ROLE_KEYS, SYSTEM_ROLES, type RoleScope } from '../systemRoles.js';
 
 export type ParsedUserRow = {

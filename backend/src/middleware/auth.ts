@@ -138,19 +138,12 @@ export async function buildServerPermissionVisibility(
 
   const memberships = (await serverMemberRepository.listByUser(user.userId)) as Array<{
     server_id: number;
-    permissions_json: string;
+    permissions: string[];
   }>;
 
   const allowed = new Set<number>();
   for (const membership of memberships) {
-    let perms: string[] = [];
-    try {
-      const parsed = JSON.parse(membership.permissions_json ?? '[]');
-      if (Array.isArray(parsed)) perms = parsed.filter((x) => typeof x === 'string');
-    } catch {
-      // Treat unparseable permissions as none.
-    }
-    if (perms.includes('*') || perms.includes(permission)) {
+    if (membership.permissions.includes('*') || membership.permissions.includes(permission)) {
       allowed.add(membership.server_id);
     }
   }

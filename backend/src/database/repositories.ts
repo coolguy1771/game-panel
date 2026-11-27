@@ -1,6 +1,7 @@
 export {
   UserRepository,
   ServerMemberRepository,
+  RoleRepository,
   GameServerRepository,
   InstallationProgressRepository,
   InstallationInteractionRepository,

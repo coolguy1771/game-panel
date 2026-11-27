@@ -19,6 +19,8 @@ function urlEnv(name: string): string | null {
 }
 
 const CONTAINER_DATA_DIR = '/data';
+// Overridable for local development and tests; deployments keep the container default.
+const DATA_DIR_ENV = 'GAMEPANEL_DATA_DIR';
 
 function boolEnv(name: string, fallback: boolean): boolean {
     const raw = process.env[name];
@@ -114,7 +116,7 @@ export function getConfig(): AppConfig {
         trustProxy: trustProxyEnv('TRUST_PROXY', false),
         adminUsername: envOrDefault('ADMIN_USERNAME', 'admin'),
         gamepanelServersDir: path.posix.join(gamepanelAppRoot, 'servers'),
-        gamepanelDataDir: CONTAINER_DATA_DIR,
+        gamepanelDataDir: envOrDefault(DATA_DIR_ENV, CONTAINER_DATA_DIR),
         gamepanelAppRoot,
         dockerSocket: envOrDefault('DOCKER_SOCKET', '/var/run/docker.sock'),
         composeProjectName: envOrDefault('COMPOSE_PROJECT_NAME', 'gamepanel'),

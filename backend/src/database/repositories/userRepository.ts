@@ -1,5 +1,6 @@
 import { BaseRepository } from './base.js';
 import { nowIso } from '../../utils/time.js';
+import { parsePermissionsJson } from '../../utils/permissionList.js';
 
 export type DbUserRow = {
   id: number;
@@ -118,20 +119,22 @@ export class UserRepository extends BaseRepository {
   async getGlobalPermissions(userId: number): Promise<string[]> {
     const db = await this.ensureDb();
 
-    const row = await db.get<{ global_permissions_json: string }>(
-      `SELECT global_permissions_json
-       FROM users
-       WHERE id = ?`,
+    // Effective global permissions are the union of the user's global roles' permissions.
+    // Roles are the only assignment mechanism since migration 0002.
+    const rows = await db.all<Array<{ permissions_json: string }>>(
+      `SELECT r.permissions_json
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = ?`,
       [userId]
     );
 
-    const raw = row?.global_permissions_json ?? '[]';
-
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
-    } catch {
-      return [];
+    const acc = new Set<string>();
+    for (const row of rows) {
+      for (const permission of parsePermissionsJson(row.permissions_json)) {
+        acc.add(permission);
+      }
     }
+    return [...acc];
   }
 }

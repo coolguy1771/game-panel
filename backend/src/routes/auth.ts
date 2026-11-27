@@ -303,20 +303,11 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
 
     const serverRows = await serverMemberRepository.listByUser(userId);
 
-    const serverPermissions = serverRows.map((r) => {
-      let permissions: string[] = [];
-      try {
-        const parsed = JSON.parse(r.permissions_json ?? '[]');
-        if (Array.isArray(parsed)) permissions = parsed.filter((x) => typeof x === 'string');
-      } catch {
-        // Keep an empty permission list if parsing fails.
-      }
-
-      return {
-        serverId: r.server_id,
-        permissions,
-      };
-    });
+    const serverPermissions = serverRows.map((r) => ({
+      serverId: r.server_id,
+      // Effective permissions are resolved from the member's roles server-side.
+      permissions: r.permissions,
+    }));
 
     return res.json({
       user: {

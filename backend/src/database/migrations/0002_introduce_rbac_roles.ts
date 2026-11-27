@@ -1,8 +1,6 @@
-import type { Database } from 'sqlite';
 import type { DatabaseMigration } from './types.js';
 import { checksumSql } from './checksum.js';
 import { planRbacConversion, type ParsedMembershipRow, type ParsedUserRow } from './rbacConversion.js';
-import { SYSTEM_ROLES } from '../systemRoles.js';
 import { nowIso } from '../../utils/time.js';
 
 const SCHEMA_SQL = `
@@ -73,11 +71,11 @@ export const migration: DatabaseMigration = {
   async up(database) {
     await database.exec(SCHEMA_SQL);
 
-    const userRows = await database.all<Array<{ id: number; is_root: number; global_permissions_json: string }>[]>(
+    const userRows = await database.all<Array<{ id: number; is_root: number; global_permissions_json: string }>>(
       'SELECT id, is_root, global_permissions_json FROM users ORDER BY id'
     );
     const membershipRows = await database.all<
-      Array<{ server_id: number; user_id: number; permissions_json: string }>[]
+      Array<{ server_id: number; user_id: number; permissions_json: string }>
     >('SELECT server_id, user_id, permissions_json FROM server_members ORDER BY server_id, user_id');
 
     const users: ParsedUserRow[] = userRows.map((row) => ({
