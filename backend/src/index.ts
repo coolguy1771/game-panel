@@ -9,6 +9,7 @@ import { closeDatabase, initializeDatabase } from './database/init.js';
 import { ensureRootUserExists, ensureSystemRolesExist } from './database/bootstrap.js';
 import { authMiddleware, errorHandler } from './middleware/auth.js';
 import authRoutes from './routes/auth.js';
+import authSsoRoutes from './routes/authSso.js';
 import userRoutes from './routes/users.js';
 import roleRoutes from './routes/roles.js';
 import serverMembersRoutes from './routes/serverMembers.js';
@@ -83,6 +84,8 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 
+// /api/auth/sso (mounted before /api/auth so its prefix wins)
+app.use('/api/auth/sso', authSsoRoutes);
 // /api/auth
 app.use('/api/auth', authRoutes);
 // /api/download/:token

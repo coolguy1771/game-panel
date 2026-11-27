@@ -167,6 +167,10 @@ router.post(
                 return res.status(403).json({ error: 'Root user password should be changed via /auth route' });
             }
 
+            if (user.auth_type === 'sso') {
+                return res.status(400).json({ error: 'SSO accounts do not use passwords' });
+            }
+
             const passwordHash = await hashPassword(newPassword);
             await userRepository.updatePassword(id, passwordHash);
 

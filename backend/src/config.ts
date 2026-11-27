@@ -68,6 +68,17 @@ function trustProxyEnv(name: string, fallback: TrustProxySetting): TrustProxySet
     }
 }
 
+type SsoConfig = {
+    enabled: boolean;
+    issuerUrl: string;
+    clientId: string;
+    clientSecret: string | null;
+    scopes: string;
+    groupsClaim: string;
+    autoProvision: boolean;
+    buttonLabel: string;
+};
+
 type AppConfig = {
     port: number;
     jwtSecret: string;
@@ -87,6 +98,7 @@ type AppConfig = {
     instanceSecret: string | null;
     telemetryEnabled: boolean;
     databaseApiBaseUrl: string | null;
+    sso: SsoConfig | null;
 };
 
 let cached: AppConfig | null = null;
@@ -98,6 +110,29 @@ export function requireAdminBootstrapPassword(): string {
     }
 
     return password;
+}
+
+function optionalEnv(name: string): string | null {
+    const trimmed = process.env[name]?.trim();
+    return trimmed ? trimmed : null;
+}
+
+function readSsoConfig(): SsoConfig | null {
+    const issuerUrl = optionalEnv('SSO_OIDC_ISSUER_URL');
+    const clientId = optionalEnv('SSO_OIDC_CLIENT_ID');
+
+    if (!issuerUrl || !clientId) return null;
+
+    return {
+        enabled: true,
+        issuerUrl,
+        clientId,
+        clientSecret: optionalEnv('SSO_OIDC_CLIENT_SECRET'),
+        scopes: envOrDefault('SSO_OIDC_SCOPES', 'openid profile email'),
+        groupsClaim: envOrDefault('SSO_OIDC_GROUPS_CLAIM', 'groups'),
+        autoProvision: boolEnv('SSO_OIDC_AUTO_PROVISION', true),
+        buttonLabel: envOrDefault('SSO_OIDC_BUTTON_LABEL', 'Sign in with SSO'),
+    };
 }
 
 export function getConfig(): AppConfig {
@@ -127,6 +162,7 @@ export function getConfig(): AppConfig {
         instanceSecret: process.env.APP_INSTANCE_SECRET?.trim() || null,
         telemetryEnabled: boolEnv('TELEMETRY_ENABLED', true),
         databaseApiBaseUrl: urlEnv('TELEMETRY_API_BASE_URL'),
+        sso: readSsoConfig(),
     };
 
     return cached;

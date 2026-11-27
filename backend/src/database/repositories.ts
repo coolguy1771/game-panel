@@ -2,6 +2,7 @@ export {
   UserRepository,
   ServerMemberRepository,
   RoleRepository,
+  SsoLoginCodeRepository,
   GameServerRepository,
   InstallationProgressRepository,
   InstallationInteractionRepository,
