@@ -111,8 +111,6 @@ async function main(): Promise<void> {
   check('global-only permission rejected in server role', badRoleRes.status === 400);
 
   const viewerSystem = rolesList.roles.find((r: { name: string }) => r.name === 'Viewer');
-  const deleteSystemRes = await post(`/api/roles-nonexistent`, null, rootToken).catch(() => null);
-  void deleteSystemRes;
   const delRes = await fetch(`${BACKEND}/api/roles/${viewerSystem.id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${rootToken}` },

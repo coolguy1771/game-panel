@@ -1,8 +1,18 @@
 import { BaseRepository } from './base.js';
 import { nowIso } from '../../utils/time.js';
 import { parsePermissionsJson } from '../../utils/permissionList.js';
+import { withDatabaseTransaction } from '../transaction.js';
 
 export type RoleScope = 'global' | 'server';
+
+export type DbRoleRow = {
+  id: number;
+  name: string;
+  scope: RoleScope;
+  permissions_json: string;
+  sso_groups_json: string;
+  is_system: number;
+};
 
 export type Role = {
   id: number;
@@ -21,14 +31,7 @@ export type RoleInput = {
   isSystem?: boolean;
 };
 
-function toRole(row: {
-  id: number;
-  name: string;
-  scope: RoleScope;
-  permissions_json: string;
-  sso_groups_json: string;
-  is_system: number;
-}): Role {
+function toRole(row: DbRoleRow): Role {
   return {
     id: row.id,
     name: row.name,
@@ -44,15 +47,15 @@ const ROLE_COLUMNS = 'id, name, scope, permissions_json, sso_groups_json, is_sys
 export class RoleRepository extends BaseRepository {
   async list(): Promise<Role[]> {
     const db = await this.ensureDb();
-    const rows = await db.all<
-      Parameters<typeof toRole>[0][]
-    >(`SELECT ${ROLE_COLUMNS} FROM roles ORDER BY scope ASC, LOWER(name) ASC`);
+    const rows = await db.all<DbRoleRow[]>(
+      `SELECT ${ROLE_COLUMNS} FROM roles ORDER BY scope ASC, LOWER(name) ASC`
+    );
     return rows.map(toRole);
   }
 
   async findById(id: number): Promise<Role | undefined> {
     const db = await this.ensureDb();
-    const row = await db.get<Parameters<typeof toRole>[0]>(
+    const row = await db.get<DbRoleRow>(
       `SELECT ${ROLE_COLUMNS} FROM roles WHERE id = ?`,
       [id]
     );
@@ -61,7 +64,7 @@ export class RoleRepository extends BaseRepository {
 
   async findByScopeAndName(scope: RoleScope, name: string): Promise<Role | undefined> {
     const db = await this.ensureDb();
-    const row = await db.get<Parameters<typeof toRole>[0]>(
+    const row = await db.get<DbRoleRow>(
       `SELECT ${ROLE_COLUMNS} FROM roles WHERE scope = ? AND LOWER(name) = LOWER(?)`,
       [scope, name]
     );
@@ -158,13 +161,13 @@ export class RoleRepository extends BaseRepository {
     return rows;
   }
 
-  // Replaces the user's global role assignments in one transaction.
+  // Replaces the user's global role assignments in one transaction. Joins an outer
+  // transaction when called inside withDatabaseTransaction.
   async setGlobalRoles(userId: number, roleIds: number[]): Promise<void> {
     const db = await this.ensureDb();
     const unique = [...new Set(roleIds)];
 
-    await db.exec('BEGIN');
-    try {
+    await withDatabaseTransaction(db, async () => {
       await db.run('DELETE FROM user_roles WHERE user_id = ?', [userId]);
       for (const roleId of unique) {
         await db.run(
@@ -172,11 +175,7 @@ export class RoleRepository extends BaseRepository {
           [userId, roleId, nowIso()]
         );
       }
-      await db.exec('COMMIT');
-    } catch (error) {
-      await db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   async listServerRoleIds(serverId: number, userId: number): Promise<number[]> {
@@ -189,13 +188,13 @@ export class RoleRepository extends BaseRepository {
   }
 
   // Replaces a membership's role assignments in one transaction. Caller must ensure the
-  // membership exists (the composite FK enforces it at the database level).
+  // membership exists (the composite FK enforces it at the database level). Joins an outer
+  // transaction when called inside withDatabaseTransaction.
   async setServerMemberRoles(serverId: number, userId: number, roleIds: number[]): Promise<void> {
     const db = await this.ensureDb();
     const unique = [...new Set(roleIds)];
 
-    await db.exec('BEGIN');
-    try {
+    await withDatabaseTransaction(db, async () => {
       await db.run('DELETE FROM server_member_roles WHERE server_id = ? AND user_id = ?', [
         serverId,
         userId,
@@ -206,10 +205,6 @@ export class RoleRepository extends BaseRepository {
           [serverId, userId, roleId, nowIso()]
         );
       }
-      await db.exec('COMMIT');
-    } catch (error) {
-      await db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 }

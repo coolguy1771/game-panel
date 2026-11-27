@@ -25,6 +25,7 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX idx_user_roles_user ON user_roles(user_id);
+  CREATE INDEX idx_user_roles_role ON user_roles(role_id);
 
   -- Assignment implies membership: the composite FK targets the UNIQUE(server_id, user_id)
   -- pair on server_members, so deleting a membership (or its user/server) removes the rows.
@@ -38,6 +39,7 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX idx_server_member_roles_user ON server_member_roles(user_id);
+  CREATE INDEX idx_server_member_roles_role ON server_member_roles(role_id);
 
   CREATE TABLE sso_login_codes (
     code_hash TEXT PRIMARY KEY,

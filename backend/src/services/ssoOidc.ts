@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { getConfig } from '../config.js';
 import { userRepository, roleRepository, ssoLoginCodeRepository } from '../database/index.js';
+import { getDatabase } from '../database/init.js';
+import { withDatabaseTransaction } from '../database/transaction.js';
 import { deriveSsoUsername, selectRolesForGroups } from '../utils/ssoHelpers.js';
 import { logError } from '../utils/logger.js';
 import type { SsoStatePayload } from '../utils/ssoState.js';
@@ -173,28 +175,37 @@ export async function completeSsoLogin(input: {
     );
     // SSO accounts never authenticate with a password; this hash is unusable garbage.
     const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('base64url'), 10);
-    const userId = await userRepository.createSsoUser({
-      username,
-      passwordHash,
-      email,
-      provider: SSO_PROVIDER_ID,
-      subject,
-    });
-    if (!userId) throw new SsoLoginError('unknown', 500);
 
-    user = await userRepository.findById(userId);
+    user = await withDatabaseTransaction(await getDatabase(), async () => {
+      const userId = await userRepository.createSsoUser({
+        username,
+        passwordHash,
+        email,
+        provider: SSO_PROVIDER_ID,
+        subject,
+      });
+      if (!userId) throw new SsoLoginError('unknown', 500);
+
+      const createdUser = await userRepository.findById(userId);
+      if (!createdUser) throw new SsoLoginError('unknown', 500);
+
+      const groups = readGroupsClaim(claims as Record<string, unknown>, sso.groupsClaim);
+      await syncSsoManagedRoles(userId, groups);
+      return createdUser;
+    });
     created = true;
   }
 
-  if (!user) throw new SsoLoginError('unknown', 500);
   if (!user.is_enabled) throw new SsoLoginError('account_disabled', 403);
 
   if (!created) {
-    await userRepository.touchSsoLogin(user.id, email);
+    const sso = requireSsoConfig();
+    const groups = readGroupsClaim(claims as Record<string, unknown>, sso.groupsClaim);
+    await withDatabaseTransaction(await getDatabase(), async () => {
+      await userRepository.touchSsoLogin(user!.id, email);
+      await syncSsoManagedRoles(user!.id, groups);
+    });
   }
-
-  const groups = readGroupsClaim(claims as Record<string, unknown>, requireSsoConfig().groupsClaim);
-  await syncSsoManagedRoles(user.id, groups);
 
   const loginCode = await ssoLoginCodeRepository.issue(user.id);
   return { loginCode };

@@ -52,11 +52,11 @@ export class UserRepository extends BaseRepository {
   async create(
     username: string,
     passwordHash: string,
-    opts?: { globalPermissions?: string[]; isEnabled?: boolean }
+    opts?: { isEnabled?: boolean }
   ): Promise<number | undefined> {
     const db = await this.ensureDb();
 
-    const globalPermsJson = JSON.stringify(opts?.globalPermissions ?? []);
+    const globalPermsJson = '[]'; // legacy column, inert since roles own access
     const enabledInt = opts?.isEnabled === false ? 0 : 1;
 
     const timestamp = nowIso();
@@ -83,7 +83,6 @@ export class UserRepository extends BaseRepository {
     id: number,
     data: {
       username?: string;
-      globalPermissions?: string[];
       is_enabled?: boolean;
     }
   ): Promise<void> {
@@ -95,11 +94,6 @@ export class UserRepository extends BaseRepository {
     if (data.username !== undefined) {
       fields.push('username = ?');
       values.push(data.username);
-    }
-
-    if (data.globalPermissions !== undefined) {
-      fields.push('global_permissions_json = ?');
-      values.push(JSON.stringify(data.globalPermissions));
     }
 
     if (data.is_enabled !== undefined) {

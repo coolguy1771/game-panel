@@ -264,6 +264,10 @@ async function createSchema(database: Database): Promise<void> {
     `);
 
     await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id);
+    `);
+
+    await database.exec(`
       CREATE TABLE IF NOT EXISTS server_member_roles (
         server_id INTEGER NOT NULL,
         user_id INTEGER NOT NULL,
@@ -276,6 +280,10 @@ async function createSchema(database: Database): Promise<void> {
 
     await database.exec(`
       CREATE INDEX IF NOT EXISTS idx_server_member_roles_user ON server_member_roles(user_id);
+    `);
+
+    await database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_server_member_roles_role ON server_member_roles(role_id);
     `);
 
     await database.exec(`
