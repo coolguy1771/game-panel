@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "tsx watch -r dotenv/config src/index.ts",
     "build": "tsc",
-    "start": "node --import dotenv/config dist/index.js"
+    "start": "node --import dotenv/config dist/index.js",
+    "test": "vitest --run"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
@@ -39,6 +40,7 @@
     "@types/yauzl": "^2.10.3",
     "@types/yazl": "^3.3.1",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^3.2.7"
   }
 }
