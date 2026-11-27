@@ -80,9 +80,11 @@ export function UserAdministration({
   const [members, setMembers] = useState<ServerMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [membersError, setMembersError] = useState<string | null>(null);
-  // Member responses are scoped to the server that was selected when they were requested;
-  // late responses for a previous server never replace the current list.
+  // The selection ref follows the selection change (not the request), and each load gets a
+  // monotonically increasing request id: a response may only touch state while it is still
+  // the latest request for the currently selected server.
   const selectedServerIdRef = useRef('');
+  const memberRequestIdRef = useRef(0);
 
   const [addMemberUserId, setAddMemberUserId] = useState('');
   const [selectedServerRoleIds, setSelectedServerRoleIds] = useState<number[]>([]);
@@ -162,20 +164,23 @@ export function UserAdministration({
 
   const loadMembers = useCallback(async (serverId: string) => {
     if (!serverId) return;
-    selectedServerIdRef.current = serverId;
+    const requestId = ++memberRequestIdRef.current;
+    const isCurrent = (): boolean =>
+      requestId === memberRequestIdRef.current && selectedServerIdRef.current === serverId;
+
     setMembersLoading(true);
     setMembersError(null);
     setMembers([]);
     try {
       const res = await apiClient.getServerMembers(Number(serverId));
-      if (selectedServerIdRef.current !== serverId) return; // stale response for a previous server
+      if (!isCurrent()) return;
       setMembers(res.members);
     } catch (error) {
-      if (selectedServerIdRef.current !== serverId) return;
+      if (!isCurrent()) return;
       setMembers([]);
       setMembersError(apiError(error, 'Failed to load server access.'));
     } finally {
-      if (selectedServerIdRef.current === serverId) {
+      if (isCurrent()) {
         setMembersLoading(false);
       }
     }
@@ -192,6 +197,10 @@ export function UserAdministration({
       current && servers.some((s) => s.id === current) ? current : servers[0].id
     );
   }, [servers]);
+
+  useEffect(() => {
+    selectedServerIdRef.current = selectedServerId;
+  }, [selectedServerId]);
 
   useEffect(() => {
     if (!selectedServerId || accessDenied) return;
@@ -304,18 +313,20 @@ export function UserAdministration({
 
     setSaveEditLoading(true);
     setEditError(null);
+    let assignmentsMutated = false;
     try {
       await apiClient.updateUser(selectedUser.id, {
         username: trimmedUsername,
         isEnabled: enabled,
         roleIds: selectedGlobalRoleIds,
       });
+      assignmentsMutated = true;
 
       if (shouldResetPassword) {
         await apiClient.resetUserPassword(selectedUser.id, newPassword);
       }
 
-      if (selectedServerId) {
+      if (selectedServerId && !membersError) {
         const selectedUserMember =
           members.find((member) => String(member.userId) === String(selectedUser.id)) ?? null;
 
@@ -325,12 +336,14 @@ export function UserAdministration({
           }
         } else if (!selectedUserMember) {
           await apiClient.addServerMember(Number(selectedServerId), selectedUser.id, selectedServerRoleIds);
+          assignmentsMutated = true;
         } else if (!sameIdSet(selectedUserMember.roles.map((role) => role.id), selectedServerRoleIds)) {
           await apiClient.updateServerMember(
             Number(selectedServerId),
             selectedUser.id,
             selectedServerRoleIds
           );
+          assignmentsMutated = true;
         }
       }
 
@@ -346,6 +359,9 @@ export function UserAdministration({
       setEditError(apiError(error, 'Failed to save user changes.'));
     } finally {
       setSaveEditLoading(false);
+      // Assignment mutations change per-role usage counts; refresh even when a later save
+      // step failed, because the earlier writes already committed.
+      if (assignmentsMutated) void loadRoles();
     }
   };
 
@@ -376,10 +392,11 @@ export function UserAdministration({
       setEditModalOpen(false);
       setFeedback({ type: 'success', text: `User ${usernameToDelete} deleted.` });
     } catch (error) {
-      setFeedback({ type: 'error', text: apiError(error, 'Failed to delete user.') });
+      // Surface to ConfirmationModal: it shows the error and keeps the typed username for
+      // a retry; the confirmation only closes after a successful delete.
+      throw new Error(apiError(error, 'Failed to delete user.'));
     } finally {
       setDeleteUserLoading(false);
-      setDeleteUserConfirm({ open: false });
     }
   };
 
@@ -426,6 +443,10 @@ export function UserAdministration({
       return;
     }
     const nextSsoGroups = roleScope === 'global' && ssoGroupsEnabled ? parseSsoGroups() : [];
+    if (roleScope === 'global' && ssoGroupsEnabled && nextSsoGroups.length === 0) {
+      setRoleError('Add at least one identity provider group when SSO management is enabled.');
+      return;
+    }
     if (roleScope === 'global' && rolePermissions.length === 0 && nextSsoGroups.length === 0) {
       setRoleError('A role needs at least one permission or SSO group.');
       return;
@@ -477,9 +498,10 @@ export function UserAdministration({
     setRoleDeleteLoading(true);
     try {
       await apiClient.deleteRole(roleId);
-      // Users still carry the deleted role id in their cached assignments; reload both so
-      // the next edit does not submit a deleted id.
+      // Users still carry the deleted role id in their cached assignments; reload role,
+      // user, and membership lists so the next edit does not submit a deleted id.
       await Promise.all([loadRoles(), loadUsers()]);
+      if (selectedServerId) await loadMembers(selectedServerId);
       setFeedback({ type: 'success', text: `Role ${name} deleted.` });
       setRoleModalOpen(false);
     } catch (error) {
@@ -657,7 +679,12 @@ export function UserAdministration({
             ssoGroupsEnabled={ssoGroupsEnabled}
             setSsoGroupsEnabled={setSsoGroupsEnabled}
             setName={setRoleName}
-            setScope={setRoleScope}
+            setScope={(nextScope) => {
+              // Permission catalogs differ per scope; carrying selections across would
+              // submit ids the other scope's catalog never shows (and the API rejects).
+              setRoleScope(nextScope);
+              setRolePermissions([]);
+            }}
             togglePermission={(permission) =>
               setRolePermissions((current) =>
                 current.includes(permission)

@@ -114,11 +114,11 @@ export class UserRepository extends BaseRepository {
     await db.run('DELETE FROM users WHERE id = ?', [id]);
   }
 
-  async findBySsoIdentity(provider: string, subject: string): Promise<DbUserRow | undefined> {
+  async findBySsoIdentity(provider: string, issuer: string, subject: string): Promise<DbUserRow | undefined> {
     const db = await this.ensureDb();
     return db.get(
-      'SELECT * FROM users WHERE sso_provider = ? AND sso_subject = ?',
-      [provider, subject]
+      'SELECT * FROM users WHERE sso_provider = ? AND sso_issuer = ? AND sso_subject = ?',
+      [provider, issuer, subject]
     );
   }
 
@@ -127,14 +127,15 @@ export class UserRepository extends BaseRepository {
     passwordHash: string;
     email: string | null;
     provider: string;
+    issuer: string;
     subject: string;
   }): Promise<number | undefined> {
     const db = await this.ensureDb();
     const timestamp = nowIso();
     const result = await db.run(
-      `INSERT INTO users (username, password_hash, global_permissions_json, is_root, is_enabled, auth_type, sso_provider, sso_subject, sso_email, created_at, updated_at)
-       VALUES (?, ?, '[]', 0, 1, 'sso', ?, ?, ?, ?, ?)`,
-      [data.username, data.passwordHash, data.provider, data.subject, data.email, timestamp, timestamp]
+      `INSERT INTO users (username, password_hash, global_permissions_json, is_root, is_enabled, auth_type, sso_provider, sso_issuer, sso_subject, sso_email, created_at, updated_at)
+       VALUES (?, ?, '[]', 0, 1, 'sso', ?, ?, ?, ?, ?, ?)`,
+      [data.username, data.passwordHash, data.provider, data.issuer, data.subject, data.email, timestamp, timestamp]
     );
     return result.lastID;
   }

@@ -18,6 +18,8 @@ const ssoRateLimiter = createRateLimiter(LOGIN_RATE_LIMITS);
 
 const STATE_COOKIE = 'gp_sso_state';
 const STATE_COOKIE_MAX_AGE = 600; // seconds; matches the signed state TTL
+const HANDOFF_COOKIE = 'gp_sso_handoff';
+const HANDOFF_COOKIE_MAX_AGE = 120; // seconds; longer than the one-time code TTL
 
 function ssoDisabled(res: Response): boolean {
   if (!getConfig().sso?.enabled) {
@@ -27,10 +29,10 @@ function ssoDisabled(res: Response): boolean {
   return false;
 }
 
-function stateCookieValue(req: Request, token: string, maxAge: number): string {
+function cookieValue(req: Request, name: string, token: string, maxAge: number, path: string): string {
   const parts = [
-    `${STATE_COOKIE}=${token}`,
-    `Path=/api/auth/sso`,
+    `${name}=${token}`,
+    `Path=${path}`,
     'HttpOnly',
     'SameSite=Lax',
     `Max-Age=${maxAge}`,
@@ -73,7 +75,7 @@ router.get('/login', async (req: Request, res: Response) => {
 
     res.setHeader(
       'Set-Cookie',
-      stateCookieValue(req, signSsoState({ state, nonce, verifier }), STATE_COOKIE_MAX_AGE)
+      cookieValue(req, STATE_COOKIE, signSsoState({ state, nonce, verifier }), STATE_COOKIE_MAX_AGE, '/api/auth/sso')
     );
     return res.redirect(authorizeUrl.toString());
   } catch (error) {
@@ -96,18 +98,25 @@ router.get('/callback', async (req: Request, res: Response) => {
     const statePayload = cookieToken ? verifySsoState(cookieToken) : null;
 
     // The state cookie is single-flow: clear it whatever happens next.
-    res.setHeader('Set-Cookie', stateCookieValue(req, '', 0));
+    res.setHeader('Set-Cookie', cookieValue(req, STATE_COOKIE, '', 0, '/api/auth/sso'));
 
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(req.query)) {
       if (typeof value === 'string') query.set(key, value);
     }
 
-    const { loginCode } = await completeSsoLogin({
+    const { loginCode, handoffSecret } = await completeSsoLogin({
       query,
       statePayload,
       redirectBase: getConfig().frontendUrl,
     });
+
+    // Browser-bound handoff proof for the exchange: only the browser that completed this
+    // callback can redeem the login code it is about to receive.
+    res.setHeader(
+      'Set-Cookie',
+      cookieValue(req, HANDOFF_COOKIE, handoffSecret, HANDOFF_COOKIE_MAX_AGE, '/api/auth/sso')
+    );
 
     return res.redirect(`/?sso-code=${encodeURIComponent(loginCode)}`);
   } catch (error) {
@@ -131,10 +140,11 @@ router.post('/exchange', async (req: Request, res: Response) => {
 
     if (!ssoRateLimiter.ensureAllowed(req, res, req.ip ?? 'unknown')) return;
 
-    const userId = await ssoLoginCodeRepository.consume(code);
+    const handoffSecret = readCookie(req, HANDOFF_COOKIE) ?? '';
+    const userId = await ssoLoginCodeRepository.consume(code, handoffSecret);
     if (!userId) {
-      // Invalid or expired codes count toward the client's rate bucket so brute-forcing
-      // codes is throttled. Keyed per client IP, never globally.
+      // Invalid, expired, or browser-unbound codes count toward the client's rate bucket
+      // so brute-forcing codes is throttled. Keyed per client IP, never globally.
       ssoRateLimiter.noteFailure(req, req.ip ?? 'unknown');
       return res.status(401).json({ error: 'Invalid or expired login code' });
     }

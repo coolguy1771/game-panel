@@ -43,6 +43,7 @@ const SCHEMA_SQL = `
 
   CREATE TABLE sso_login_codes (
     code_hash TEXT PRIMARY KEY,
+    handoff_hash TEXT NOT NULL,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL,
     used_at TEXT
@@ -50,10 +51,11 @@ const SCHEMA_SQL = `
 
   ALTER TABLE users ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'local' CHECK(auth_type IN ('local','sso'));
   ALTER TABLE users ADD COLUMN sso_provider TEXT;
+  ALTER TABLE users ADD COLUMN sso_issuer TEXT;
   ALTER TABLE users ADD COLUMN sso_subject TEXT;
   ALTER TABLE users ADD COLUMN sso_email TEXT;
 
-  CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_provider, sso_subject) WHERE sso_subject IS NOT NULL;
+  CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_provider, sso_issuer, sso_subject) WHERE sso_subject IS NOT NULL;
 `;
 
 function parsePermsJson(raw: unknown): string[] {

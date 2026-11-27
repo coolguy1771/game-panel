@@ -15,6 +15,7 @@ const ADMIN_PASSWORD = 'verify-root-password';
 process.env.DOMAIN = '127.0.0.1';
 process.env.PORT = String(BACKEND_PORT);
 process.env.JWT_SECRET = 'verify-jwt-secret';
+process.env.ADMIN_USERNAME = 'admin';
 process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
 process.env.GAMEPANEL_DATA_DIR = dataDir;
 process.env.SSO_OIDC_ISSUER_URL = 'placeholder-set-after-mock-starts';
@@ -187,8 +188,22 @@ async function main(): Promise<void> {
   const finalUrl = new URL(callbackLocation, BACKEND);
   check('frontend redirect carries sso-code', finalUrl.searchParams.has('sso-code'));
 
+  // The callback must hand this browser a handoff proof; the exchange refuses codes
+  // presented without it (login-CSRF defense). The callback also clears the state cookie,
+  // so pick the handoff one explicitly.
+  const handoffCookie = callbackRes.headers
+    .getSetCookie()
+    .find((cookie) => cookie.startsWith('gp_sso_handoff=')) ?? '';
+  check('callback issues handoff proof cookie', handoffCookie.startsWith('gp_sso_handoff='));
+
   const loginCode = finalUrl.searchParams.get('sso-code') ?? '';
-  const exchangeRes = await post('/api/auth/sso/exchange', { code: loginCode });
+
+  const noHandoffRes = await post('/api/auth/sso/exchange', { code: loginCode });
+  check('exchange without handoff proof rejected', noHandoffRes.status === 401);
+
+  const exchangeRes = await post('/api/auth/sso/exchange', { code: loginCode }, undefined, {
+    Cookie: handoffCookie,
+  });
   check('exchange code for token', exchangeRes.status === 200);
   const ssoUser = (await exchangeRes.json()) as { token: string; user: { username: string } };
 
@@ -197,9 +212,13 @@ async function main(): Promise<void> {
   check('SSO username derived and truncated', ssoUser.user.username.length <= 12, ssoUser.user.username);
 
   // 6. One-time code semantics
-  const replayRes = await post('/api/auth/sso/exchange', { code: loginCode });
+  const replayRes = await post('/api/auth/sso/exchange', { code: loginCode }, undefined, {
+    Cookie: handoffCookie,
+  });
   check('exchange code is single-use', replayRes.status === 401);
-  const bogusRes = await post('/api/auth/sso/exchange', { code: 'bogus-code' });
+  const bogusRes = await post('/api/auth/sso/exchange', { code: 'bogus-code' }, undefined, {
+    Cookie: handoffCookie,
+  });
   check('bogus code rejected', bogusRes.status === 401);
 
   // 7. SSO accounts cannot use passwords

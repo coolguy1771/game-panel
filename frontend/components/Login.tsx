@@ -17,8 +17,12 @@ const SSO_ERROR_MESSAGES: Record<string, string> = {
 };
 
 function ssoErrorMessage(reason: string | null): string {
-  if (!reason) return SSO_ERROR_MESSAGES.unknown;
-  return SSO_ERROR_MESSAGES[reason] ?? SSO_ERROR_MESSAGES.unknown;
+  // Own-property check only: an inherited key (e.g. "toString") must not resolve to a
+  // function and leak into state as a bogus updater.
+  if (!reason || !Object.prototype.hasOwnProperty.call(SSO_ERROR_MESSAGES, reason)) {
+    return SSO_ERROR_MESSAGES.unknown;
+  }
+  return SSO_ERROR_MESSAGES[reason];
 }
 
 export function Login({ onLogin }: LoginProps) {
@@ -92,6 +96,9 @@ export function Login({ onLogin }: LoginProps) {
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // An in-flight SSO code exchange also stores a session token; submitting credentials
+    // meanwhile would let whichever request resolves last own the stored session.
+    if (ssoProcessing) return;
     if (!username || !password) {
       setError('Please enter both username and password');
       return;
@@ -232,7 +239,7 @@ export function Login({ onLogin }: LoginProps) {
 
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || ssoProcessing}
                 className="mt-2 w-full rounded-lg py-2.5 text-sm font-semibold transition-all"
                 style={{
                   background: loading ? '#94a3b8' : 'linear-gradient(135deg, #003cbd 0%, #0050d7 100%)',

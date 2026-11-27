@@ -692,6 +692,9 @@ main() {
       fi
       SSO_OIDC_BUTTON_LABEL="$(prompt_optional "${GP_SSO_OIDC_BUTTON_LABEL:-}" 'SSO button label' 'Sign in with SSO')"
       SSO_OIDC_ADMIN_GROUPS="$(prompt_optional "${GP_SSO_OIDC_ADMIN_GROUPS:-}" 'OIDC groups granted panel admin (comma-separated; empty keeps the local admin)' '')"
+      # Normalize like the backend: trim entries, drop empties, so whitespace-only or
+      # comma-only values cannot defeat the local-admin password requirement.
+      SSO_OIDC_ADMIN_GROUPS="$(printf '%s' "$SSO_OIDC_ADMIN_GROUPS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | paste -sd ',' -)"
     fi
   fi
 

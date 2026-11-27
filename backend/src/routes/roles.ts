@@ -162,6 +162,12 @@ router.patch(
         const nameError = validateRoleName(name);
         if (nameError) return res.status(400).json({ error: nameError });
 
+        // System role names are load-bearing (e.g. the installer grants "Full access" to
+        // server creators); renaming them must not be possible.
+        if (role.isSystem && name !== role.name) {
+          return res.status(403).json({ error: 'System roles cannot be renamed' });
+        }
+
         const conflict = await roleRepository.findByScopeAndName(role.scope, name);
         if (conflict && conflict.id !== id) {
           return res.status(409).json({ error: 'A role with this name already exists' });

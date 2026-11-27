@@ -23,9 +23,11 @@ export async function ensureRootUserExists(): Promise<void> {
 
   const adminPassword = process.env.ADMIN_PASSWORD?.trim();
   if (!adminPassword) {
-    // Skipping the local root is only safe when SSO is actually configured to mint admins;
-    // otherwise the panel would start with no authentication path at all.
-    if (ssoAdminGroupsFromEnv().length > 0 && getConfig().sso?.enabled) {
+    // Skipping the local root is only safe when SSO actually provisions administrators:
+    // enabled provider, declared admin groups, AND JIT provisioning on (otherwise the first
+    // unknown SSO login is rejected and the panel has no working authentication path).
+    const sso = getConfig().sso;
+    if (ssoAdminGroupsFromEnv().length > 0 && sso?.enabled && sso.autoProvision) {
       logInfo(
         'DATABASE',
         'No ADMIN_PASSWORD set; skipping local root creation (SSO admin groups are configured).'
@@ -34,7 +36,7 @@ export async function ensureRootUserExists(): Promise<void> {
     }
 
     throw new Error(
-      'Missing env var: ADMIN_PASSWORD. It is required to create the first root user unless SSO (SSO_OIDC_ISSUER_URL/SSO_OIDC_CLIENT_ID) and SSO_OIDC_ADMIN_GROUPS are configured.'
+      'Missing env var: ADMIN_PASSWORD. It is required to create the first root user unless SSO is configured (SSO_OIDC_ISSUER_URL/SSO_OIDC_CLIENT_ID) with SSO_OIDC_ADMIN_GROUPS and auto-provisioning enabled.'
     );
   }
 

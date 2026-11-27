@@ -59,6 +59,21 @@ function pruneBucket(bucket: RateBucket, now: number, windowMs: number): void {
     }
 }
 
+// Removes map entries whose failures have all expired and whose block has ended, so
+// abandoned identifiers do not accumulate for the lifetime of the process.
+function evictIfExpired(
+    map: Map<string, RateBucket>,
+    key: string,
+    bucket: RateBucket,
+    now: number,
+    windowMs: number
+): void {
+    const hasRecentAttempts = bucket.attempts.some((ts) => ts >= now - windowMs);
+    if (!hasRecentAttempts && bucket.blockedUntil <= now) {
+        map.delete(key);
+    }
+}
+
 export type RateLimiter = {
     // Returns false (and writes the 429 response) when the client must back off.
     ensureAllowed(req: Request, res: Response, identifier: string): boolean;
@@ -77,6 +92,7 @@ export function createRateLimiter(config: RateLimitConfig): RateLimiter {
         if (!bucket) return 0;
 
         pruneBucket(bucket, now, config.windowMs);
+        evictIfExpired(map, key, bucket, now, config.windowMs);
         return bucket.blockedUntil > now ? bucket.blockedUntil - now : 0;
     };
 
@@ -89,6 +105,8 @@ export function createRateLimiter(config: RateLimitConfig): RateLimiter {
             bucket.blockedUntil = now + config.blockMs;
             bucket.attempts = [];
         }
+
+        evictIfExpired(map, key, bucket, now, config.windowMs);
     };
 
     return {

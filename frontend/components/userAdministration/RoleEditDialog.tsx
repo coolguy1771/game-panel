@@ -183,7 +183,11 @@ export function RoleEditDialog({
                 </div>
                 {ssoGroupsEnabled && (
                   <div className="mt-3">
+                    <label htmlFor="role-sso-groups" className="mb-1 block text-xs font-medium text-gray-300">
+                      Identity provider groups
+                    </label>
                     <textarea
+                      id="role-sso-groups"
                       value={ssoGroupsText}
                       onChange={(event) => setSsoGroupsText(event.target.value)}
                       placeholder={'group-a\ngroup-b'}

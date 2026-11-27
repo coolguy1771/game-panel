@@ -165,10 +165,11 @@ async function syncSsoManagedRoles(userId: number, groups: string[]): Promise<vo
   await roleRepository.setGlobalRoles(userId, nextIds);
 }
 
-export type SsoCallbackOutcome = { loginCode: string };
+export type SsoCallbackOutcome = { loginCode: string; handoffSecret: string };
 
 // Validates the callback (state/nonce/PKCE), resolves or provisions the user, resyncs
-// SSO-managed roles, and mints a one-time login code for the frontend to exchange.
+// SSO-managed roles, and mints a one-time login code plus the browser-bound handoff secret
+// the exchange endpoint will require.
 export async function completeSsoLogin(input: {
   query: URLSearchParams;
   statePayload: SsoStatePayload | null;
@@ -205,12 +206,15 @@ export async function completeSsoLogin(input: {
   }
 
   const subject = claims.sub;
+  // Per OIDC Core, iss + sub together are the stable end-user identifier; the lookup is
+  // scoped by both so a changed issuer can never claim accounts created under another one.
+  const issuer = claims.iss;
   const email = typeof claims.email === 'string' ? claims.email : null;
   const preferredUsername =
     typeof claims.preferred_username === 'string' ? claims.preferred_username : null;
   const nickname = typeof claims.nickname === 'string' ? claims.nickname : null;
 
-  let user = await userRepository.findBySsoIdentity(SSO_PROVIDER_ID, subject);
+  let user = await userRepository.findBySsoIdentity(SSO_PROVIDER_ID, issuer, subject);
   let created = false;
 
   if (!user) {
@@ -229,6 +233,7 @@ export async function completeSsoLogin(input: {
         passwordHash,
         email,
         provider: SSO_PROVIDER_ID,
+        issuer,
         subject,
       });
       if (!userId) throw new SsoLoginError('unknown', 500);
@@ -254,6 +259,9 @@ export async function completeSsoLogin(input: {
     });
   }
 
-  const loginCode = await ssoLoginCodeRepository.issue(user.id);
-  return { loginCode };
+  // Browser-bound handoff proof: the callback hands this secret to the same browser in an
+  // HttpOnly cookie, and the exchange refuses codes presented without it.
+  const handoffSecret = crypto.randomBytes(32).toString('base64url');
+  const loginCode = await ssoLoginCodeRepository.issue(user.id, handoffSecret);
+  return { loginCode, handoffSecret };
 }

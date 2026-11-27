@@ -163,6 +163,7 @@ async function createSchema(database: Database): Promise<void> {
         token_version INTEGER NOT NULL DEFAULT 0,
         auth_type TEXT NOT NULL DEFAULT 'local' CHECK(auth_type IN ('local','sso')),
         sso_provider TEXT,
+        sso_issuer TEXT,
         sso_subject TEXT,
         sso_email TEXT,
         created_at TEXT NOT NULL,
@@ -299,6 +300,7 @@ async function createSchema(database: Database): Promise<void> {
     await database.exec(`
       CREATE TABLE IF NOT EXISTS sso_login_codes (
         code_hash TEXT PRIMARY KEY,
+        handoff_hash TEXT NOT NULL,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         expires_at TEXT NOT NULL,
         used_at TEXT
@@ -519,7 +521,7 @@ async function createSchema(database: Database): Promise<void> {
 
     await database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_sso_identity
-      ON users(sso_provider, sso_subject) WHERE sso_subject IS NOT NULL;
+      ON users(sso_provider, sso_issuer, sso_subject) WHERE sso_subject IS NOT NULL;
     `);
 
     await database.exec('COMMIT');

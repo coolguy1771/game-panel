@@ -41,10 +41,12 @@ interface UserEditDialogProps {
 function RoleToggle({
   role,
   checked,
+  disabled = false,
   onChange,
 }: {
   role: PanelRole;
   checked: boolean;
+  disabled?: boolean;
   onChange: () => void;
 }) {
   const ssoManaged = role.ssoGroups.length > 0;
@@ -54,11 +56,11 @@ function RoleToggle({
       ariaLabel={role.name}
       checked={checked}
       size="compact"
-      disabled={ssoManaged}
+      disabled={disabled || ssoManaged}
       onChange={onChange}
       label={ssoManaged ? `${role.name} (managed by SSO)` : role.name}
       className={`w-full flex-row-reverse justify-between rounded border px-3 py-2 transition-colors ${
-        ssoManaged
+        disabled || ssoManaged
           ? 'cursor-not-allowed border-gray-700/60 bg-[#111827]/60 text-gray-500'
           : checked
             ? 'border-[var(--color-cyan-400)]/50 bg-[#0050D7]/10'
@@ -286,6 +288,7 @@ export function UserEditDialog({
                             key={`server-role-${role.id}`}
                             role={role}
                             checked={selectedServerRoleIds.includes(role.id)}
+                            disabled={!selectedServerId || membersLoading || Boolean(membersError)}
                             onChange={() => onToggleServerRole(role.id)}
                           />
                         ))}
