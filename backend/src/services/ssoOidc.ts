@@ -36,7 +36,10 @@ function requireSsoConfig(): OidcRuntime['sso'] {
 async function getRuntime(): Promise<OidcRuntime> {
   const sso = requireSsoConfig();
   cachedRuntime ??= {
-    config: await oidc.discovery(new URL(sso.issuerUrl), sso.clientId, sso.clientSecret ?? undefined),
+    config: await oidc.discovery(new URL(sso.issuerUrl), sso.clientId, sso.clientSecret ?? undefined, undefined, {
+      // http:// issuers stay disabled unless explicitly opted in (dev/test IdPs).
+      execute: sso.allowInsecureRequests ? [oidc.allowInsecureRequests] : [],
+    }),
     sso,
   };
   return cachedRuntime;

@@ -77,6 +77,7 @@ type SsoConfig = {
     groupsClaim: string;
     autoProvision: boolean;
     buttonLabel: string;
+    allowInsecureRequests: boolean;
 };
 
 type AppConfig = {
@@ -132,6 +133,8 @@ function readSsoConfig(): SsoConfig | null {
         groupsClaim: envOrDefault('SSO_OIDC_GROUPS_CLAIM', 'groups'),
         autoProvision: boolEnv('SSO_OIDC_AUTO_PROVISION', true),
         buttonLabel: envOrDefault('SSO_OIDC_BUTTON_LABEL', 'Sign in with SSO'),
+        // Opt-in only: allows http:// issuers (local/test IdPs). Production IdPs are https.
+        allowInsecureRequests: boolEnv('SSO_OIDC_ALLOW_INSECURE', false),
     };
 }
 
